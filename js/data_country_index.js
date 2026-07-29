@@ -1,0 +1,5 @@
+// ============================================================
+//  Iron & Dominion 1914 — 国家省份映射
+// ============================================================
+
+const COUNTRY_PROVINCES = {"ALBANIA":["ALBANIA"],"TURKEY":["TURKEY"],"AUSTRIA_HUNGARY":["AUSTRIA_HUNGARY"],"BULGARIA":["BULGARIA"],"BELGIUM":["BELGIUM"],"DENMARK":["DENMARK"],"GERMANY":["GERMANY"],"RUSSIA":["RUSSIA"],"FRANCE":["FRANCE"],"FINLAND":["FINLAND"],"NETHERLANDS":["NETHERLANDS"],"MONTENEGRO":["MONTENEGRO"],"LUXEMBOURG":["LUXEMBOURG"],"ROMANIA":["ROMANIA"],"NORWAY":["NORWAY"],"PORTUGAL":["PORTUGAL"],"SWEDEN":["SWEDEN"],"SWITZERLAND":["SWITZERLAND"],"SERBIA":["SERBIA"],"SPAIN":["SPAIN"],"GREECE":["GREECE"],"ITALY":["ITALY"],"UK":["UK_ENGLAND","UK_IRELAND"]};
