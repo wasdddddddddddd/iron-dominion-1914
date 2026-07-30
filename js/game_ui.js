@@ -1,7 +1,7 @@
 // Iron & Dominion 1914 — 渲染引擎（省份版）
 
 const canvas = document.getElementById("gameCanvas");
-const ctx = canvas.getContext("2d", { willReadFrequently: false });
+let ctx = canvas.getContext("2d", { willReadFrequently: false });
 
 let camX = 10, camY = 51, zoom = 0.5;
 let isDragging = false, dragStartX, dragStartY, dragCamStartX, dragCamStartY;
@@ -999,28 +999,35 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
 
     // ===== Offscreen cache for static geometry =====
     let viewKey = camX.toFixed(3) + ',' + camY.toFixed(3) + ',' + zoom.toFixed(5) + ',' + w + ',' + h;
-    if (window._staticViewKey !== viewKey) {
+    let needCache = window._staticViewKey !== viewKey || !window._coastCache;
+    if (needCache && typeof PROVINCES !== 'undefined') {
         // Coast grid cache (drawn before province fills)
-        if (!window._coastCache) window._coastCache = document.createElement('canvas');
-        window._coastCache.width = w; window._coastCache.height = h;
+        if (!window._coastCache || window._coastCache.width !== w || window._coastCache.height !== h) {
+            let c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            window._coastCache = c;
+        }
         let cc = window._coastCache.getContext('2d');
         let sc = ctx;
-        ctx = cc;
+        ctx = cc; cc.clearRect(0, 0, w, h);
         drawCoastGrid();
         ctx = sc;
 
         // Borders + rivers cache (drawn after province fills)
-        if (!window._borderCache) window._borderCache = document.createElement('canvas');
-        window._borderCache.width = w; window._borderCache.height = h;
+        if (!window._borderCache || window._borderCache.width !== w || window._borderCache.height !== h) {
+            let c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            window._borderCache = c;
+        }
         let bc = window._borderCache.getContext('2d');
-        ctx = bc;
+        ctx = bc; bc.clearRect(0, 0, w, h);
         drawRivers();
         drawBorders();
         ctx = sc;
 
         window._staticViewKey = viewKey;
     }
-    ctx.drawImage(window._coastCache, 0, 0);
+    if (window._coastCache) ctx.drawImage(window._coastCache, 0, 0);
 
     // Draw provinces directly (native canvas handles ~200 polygons at 60fps)
     drawProvinces();

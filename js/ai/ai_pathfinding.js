@@ -11,8 +11,8 @@ if (typeof moveUnits === 'function' && !window._origMoveUnits) {
 // ===== 1. 导航网格 =====
 const PF_CELL = 0.04;       // ~4km/格，高精度
 const NAVY_BUFFER = PF_CELL * 0.35; // 海军距陆最小距离（~1.4km）
-const MAX_ASTAR_ITER = 20000;
-const MAX_ASTAR_PER_FRAME = 8;
+const MAX_ASTAR_ITER = 8000;
+const MAX_ASTAR_PER_FRAME = 16;
 const STUCK_FRAMES = 15;
 
 let gPF = null; // {cols,rows,minLon,minLat,land:Uint8Array,cost:Float32Array,owner:Array}
@@ -329,27 +329,30 @@ function _aStarGeneric(sx, sy, ex, ey, wlkFn, costFn, skipDiag) {
     if (sx === ex && sy === ey) return [];
 
     _aClear();
-    let k = (x, y) => x + ',' + y;
+    let k = (x, y) => (x << 16) | y;
     let sk = k(sx, sy), ek = k(ex, ey);
 
     _astarG[sk] = 0;
     _astarParent[sk] = null;
-    _heapPush(_astarOpen, { x: sx, y: sy, f: Math.hypot(sx - ex, sy - ey) });
+    let adx = sx > ex ? sx - ex : ex - sx, ady = sy > ey ? sy - ey : ey - sy;
+    let h0 = adx < ady ? adx * 0.414 + ady : ady * 0.414 + adx;
+    _heapPush(_astarOpen, { x: sx, y: sy, f: h0 });
 
     let dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
     let iters = 0;
-    let bestKey = sk, bestDist = Math.hypot(sx - ex, sy - ey);
+    let bestKey = sk, bestDist = h0;
 
     while (_astarOpen.length && iters < MAX_ASTAR_ITER) {
         iters++;
         let cur = _heapPop(_astarOpen);
-
         let ck = k(cur.x, cur.y);
         if (ck === ek) { bestKey = ek; break; }
         if (_astarVisited.has(ck)) continue;
         _astarVisited.add(ck);
 
-        let d2t = Math.hypot(cur.x - ex, cur.y - ey);
+        let ddx = cur.x > ex ? cur.x - ex : ex - cur.x;
+        let ddy = cur.y > ey ? cur.y - ey : ey - cur.y;
+        let d2t = ddx < ddy ? ddx * 0.414 + ddy : ddy * 0.414 + ddx;
         if (d2t < bestDist) { bestDist = d2t; bestKey = ck; }
 
         for (let d of dirs) {
@@ -365,7 +368,9 @@ function _aStarGeneric(sx, sy, ex, ey, wlkFn, costFn, skipDiag) {
             if (ng < (_astarG[nk] || Infinity)) {
                 _astarG[nk] = ng;
                 _astarParent[nk] = { x: cur.x, y: cur.y };
-                _heapPush(_astarOpen, { x: nx, y: ny, f: ng + Math.hypot(nx - ex, ny - ey) });
+                let hdx = nx > ex ? nx - ex : ex - nx, hdy = ny > ey ? ny - ey : ey - ny;
+                let h = hdx < hdy ? hdx * 0.414 + hdy : hdy * 0.414 + hdx;
+                _heapPush(_astarOpen, { x: nx, y: ny, f: ng + h });
             }
         }
     }
@@ -375,7 +380,7 @@ function _aStarGeneric(sx, sy, ex, ey, wlkFn, costFn, skipDiag) {
     if (endKey === sk) return [];
 
     let path = [];
-    let p = { x: parseInt(endKey.split(',')[0]), y: parseInt(endKey.split(',')[1]) };
+    let p = { x: endKey >> 16, y: endKey & 0xFFFF };
     while (p) { path.push(p); p = _astarParent[k(p.x, p.y)]; }
     path.reverse();
     return path;
