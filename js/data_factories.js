@@ -7,10 +7,12 @@
 const CITY_FACTORIES = {
     // ===== 德国 =====
     'berlin': 3, 'hamburg': 2, 'munich': 2, 'cologne': 2, 'frankfurt': 2,
-    'leipzig': 2, 'dresden': 2, 'nuremberg': 2, 'breslau': 2,
+    'leipzig': 2, 'dresden': 2, 'nuremberg': 2, 'breslau': 2, 'danzig': 2, 'konigsberg': 2,
+    'bremen': 2, 'hannover': 2, 'aachen': 2, 'rostock': 2, 'kiel': 2, 'strasbourg': 2,
     // ===== 法国 =====
     'paris': 3, 'lyon': 2, 'marseille': 2, 'bordeaux': 2, 'lille': 2,
-    'toulouse': 2, 'nice': 2, 'nantes': 2, 'strasbourg': 2, 'nancy': 2,
+    'toulouse': 2, 'nice': 2, 'nantes': 2,
+    'reims': 2, 'verdun': 2, 'amiens': 2, 'orleans_fr': 2,
     // ===== 英国 =====
     'london': 3, 'manchester': 2, 'birmingham': 2, 'glasgow': 2, 'liverpool': 2,
     'edinburgh': 2, 'bristol': 2, 'leeds': 2, 'dublin': 2,
@@ -19,8 +21,8 @@ const CITY_FACTORIES = {
     'venice': 2, 'florence': 2, 'palermo': 2, 'trieste': 2,
     // ===== 俄国 =====
     'moscow': 3, 'saint_petersburg': 2, 'kiev': 2, 'odessa': 2, 'warsaw': 2,
-    'minsk': 2, 'riga': 2, 'samara': 2, 'kharkov': 2, 'ekaterinburg': 2,
-    'rostov': 2, 'nizhny': 2, 'kazan': 2, 'sevastopol': 2, 'smolensk': 2,
+    'minsk': 2, 'riga': 2,
+    'rostov': 2, 'sevastopol': 2,
     // ===== 奥匈帝国 =====
     'vienna': 3, 'budapest': 2, 'prague': 2, 'krakow': 2, 'zagreb': 2,
     'bratislava': 2, 'lemberg': 2, 'kassa': 2, 'brasso': 2,

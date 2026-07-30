@@ -11,43 +11,104 @@
         #loading {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             display: flex; align-items: center; justify-content: center;
-            background: #0a0f1a; color: #8a7a5a; font-size: 18px;
+            background: #05080d; color: #fff; font-size: 18px;
             font-family: "Georgia", serif; z-index: 100;
             transition: opacity 0.6s; pointer-events: none;
         }
         #loading.hidden { opacity: 0; }
+        #loadingTitle {
+            font-size: 42px; color: #e8d8b0; letter-spacing: 6px;
+            margin-bottom: 6px;
+        }
+        #loadingSub {
+            font-size: 14px; color: rgba(255,255,255,0.3); margin-bottom: 50px;
+            letter-spacing: 3px;
+        }
+        #loadingBar {
+            width: 540px; height: 18px; background: #3a3030;
+            border-radius: 9px; margin: 0 auto; overflow: hidden;
+            border: 3px solid #e8a820;
+            box-shadow: 0 0 30px rgba(232,168,32,0.5), inset 0 0 10px rgba(0,0,0,0.5);
+        }
+        #loadingBarFill {
+            width: 0%; height: 100%; background: linear-gradient(90deg, #ccc, #f0f0f0, #fff);
+            border-radius: 7px; transition: width 0.3s ease;
+            box-shadow: inset 0 0 20px rgba(255,255,255,0.7);
+        }
+        #loadingPercent {
+            font-size: 20px; color: rgba(255,255,255,0.7); margin-top: 16px;
+            font-family: "Georgia", serif; font-weight: bold;
+        }
     </style>
 </head>
 <body oncontextmenu="return false;" style="overscroll-behavior:none;user-select:none;-webkit-user-select:none;">
 <canvas id="gameCanvas"></canvas>
-<div id="loading"><span>铁与权柄：1914</span></div>
-
-<div id="countrySelect" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(10,15,26,0.95);z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#e8d8b0;font-family:Georgia,serif;">
-    <h1 style="font-size:32px;margin-bottom:8px;color:#c8b88a;">铁与权柄：1914</h1>
-    <p style="font-size:14px;margin-bottom:30px;color:rgba(255,255,255,0.4);">选择你的国家</p>
-    <div id="countryList" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;max-width:600px;">
+<div id="loading">
+    <div style="text-align:center;">
+        <div id="loadingTitle">铁与权柄：1914</div>
+        <div id="loadingSub">IRON & DOMINION</div>
+        <div id="loadingBar"><div id="loadingBarFill"></div></div>
+        <div id="loadingPercent">正在加载...</div>
     </div>
-    <p style="margin-top:30px;font-size:12px;color:rgba(255,255,255,0.2);">鼠标悬停查看国家信息</p>
 </div>
 
-<script src="js/config.js"></script>
-<script src="js/data_provinces.js"></script>
-<script src="js/data_province_name_cn.js"></script>
-<script src="js/data_cities.js"></script>
-<script src="js/data_country_index.js"></script>
-<script src="js/data_factories.js"></script>
-<script src="js/game_ui.js"></script>
-<script src="js/data_events.js"></script>
-<script src="js/game_state.js"></script>
-<script src="js/navy/shipGrades.js"></script>
-<script src="js/navy/shipData.js"></script>
-<script src="js/navy/shipNaming.js"></script>
-<script src="js/navy/navyNode.js"></script>
-<script src="js/navy/shipProductionUI.js"></script>
-<script src="js/game_panels.js"></script>
-<script src="js/tactical.js"></script>
-<script src="js/game_core.js"></script>
-<script src="js/game_init.js"></script>
+<div id="countrySelect" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(10,15,26,0.96);z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#e8d8b0;font-family:Georgia,serif;overflow-y:auto;padding:20px;">
+    <h1 style="font-size:clamp(22px,5vw,32px);margin-bottom:8px;color:#c8b88a;text-align:center;">铁与权柄：1914</h1>
+    <p style="font-size:clamp(12px,2vw,14px);margin-bottom:24px;color:rgba(255,255,255,0.4);text-align:center;">选择你的国家</p>
+    <div id="countryList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;max-width:700px;width:95vw;">
+    </div>
+    <p style="margin-top:20px;font-size:clamp(10px,1.5vw,12px);color:rgba(255,255,255,0.2);text-align:center;">点击选择国家 · 长按或右键查看详情</p>
+</div>
+
+<script src="js/config.js" defer></script>
+<script src="js/data_provinces.js" defer></script>
+<script src="js/data_province_name_cn.js" defer></script>
+<script src="js/data_cities.js" defer></script>
+<script src="js/data_country_index.js" defer></script>
+<script src="js/data_factories.js" defer></script>
+<script src="js/game_ui.js" defer></script>
+<script src="js/data_events.js" defer></script>
+<script src="js/game_state.js" defer></script>
+<script src="js/navy/shipGrades.js" defer></script>
+<script src="js/navy/shipData.js" defer></script>
+<script src="js/navy/shipNaming.js" defer></script>
+<script src="js/navy/navyNode.js" defer></script>
+<script src="js/navy/shipProductionUI.js" defer></script>
+<script src="js/game_panels.js" defer></script>
+<script src="js/tactical.js" defer></script>
+<script src="js/game_core.js" defer></script>
+<script src="js/ai/ai_pathfinding.js" defer></script>
+<script src="js/ai/ai_controller.js" defer></script>
+<script src="js/game_init.js" defer></script>
+<script src="mobile.js" defer></script>
+
+<script>
+(function() {
+    var scripts = document.querySelectorAll('script[defer]');
+    var total = scripts.length;
+    var loaded = 0;
+    var bar = document.getElementById('loadingBarFill');
+    var pct = document.getElementById('loadingPercent');
+    if (!bar || !pct || total === 0) return;
+
+    function tick() {
+        loaded++;
+        var v = Math.round(loaded / total * 100);
+        bar.style.width = v + '%';
+        pct.textContent = v + '%';
+        if (loaded >= total) {
+            setTimeout(function() {
+                document.getElementById('loading').classList.add('hidden');
+            }, 400);
+        }
+    }
+
+    for (var i = 0; i < scripts.length; i++) {
+        scripts[i].addEventListener('load', tick);
+        scripts[i].addEventListener('error', tick);
+    }
+})();
+</script>
 
 <div id="errorMsg" style="position:fixed;bottom:10px;left:10px;background:rgba(200,0,0,0.8);color:#fff;padding:8px 12px;font-size:13px;z-index:200;display:none;max-width:80%;font-family:monospace;"></div>
 <script>

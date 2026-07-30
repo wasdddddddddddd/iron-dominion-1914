@@ -441,7 +441,7 @@ const NAVAL_BASES = [
   {
     "id": "nb_uk_3",
     "country": "UK",
-    "lon": -6,
+    "lon": -8,
     "lat": 51,
     "name": "英国海洋节点",
     "region": "atlantic"

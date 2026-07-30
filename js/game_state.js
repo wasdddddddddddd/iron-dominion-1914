@@ -23,6 +23,7 @@ let G = {
     events: [],
     activeEvent: null,
     buildQueue: [],
+    navyBuildQueue: [],
     totalDivisions: {},
     armyGroups: {},
     activeTab: null,
@@ -41,8 +42,13 @@ let G = {
     surrendered: {},
     warAnnouncements: {},
     moveLines: [],
-    frontlines: {},
+    frontlines: {}, // divId -> groupId
+    frontlineGroups: [], // [{ id, start:{x,y}, end:{x,y}, colorIdx }]
     frontlineDrawing: false,
+    frontlineDrawingLine: false, // 是否正在拖动绘制指挥线
+    frontlineCmdStart: null, // 指挥线起点 {x, y} world coords
+    frontlineCmdEnd: null,   // 指挥线终点 {x, y} world coords
+    frontlineGroupCounter: 0, // 前线组编号
     frontTargets: [],
     germanyDeclaredWar: false,
     navyProductionMode: false,
@@ -60,6 +66,7 @@ let G = {
     navyNodes: {},
     shipIdCounter: 1,
     shipNameCounters: {},
+    fireZones: [],
 };
 // bbox: { minX, maxX, minY, maxY } for each province (precomputed)
 let PROVINCE_BBOX = {};
@@ -75,11 +82,11 @@ const MANPOWER_COST = {
 
 // Unit type configs — COSTS BALANCED (higher costs, lower income)
 const UNIT_TYPES = {
-    infantry: { cost:50, range:0.12, fireRate:5, damage:8, speed:0.027, sym:"⚔️", label:"步兵", desc:"近距快速", manpower:15 },
-    engineer: { cost:70, range:0.08, fireRate:5, damage:6, speed:0.022, sym:"⚙️", label:"工兵", desc:"短射程", manpower:12 },
-    cavalry:  { cost:80, range:0.096, fireRate:3, damage:7, speed:0.057, sym:"🏇", label:"骑兵", desc:"高速机动", manpower:10 },
-    artillery:{ cost:120, range:0.36, fireRate:18, damage:25, speed:0.013, sym:"💥", label:"炮兵", desc:"远程抛物线", manpower:8 },
-    navy:     { cost:500, range:1.5, fireRate:30, damage:60, speed:0.045, sym:"🚢", label:"海军", desc:"远程重火力", manpower:5 },
+    infantry: { cost:50, range:0.12, fireRate:1, damage:14, speed:0.0432, maxStr:100, bulletSpeed:1.4, sym:"🪖", label:"步兵", desc:"基准，全能主力", manpower:15 },
+    engineer: { cost:70, range:0.084, fireRate:1.25, damage:8.4, speed:0.0389, maxStr:110, bulletSpeed:1.12, sym:"🛠️", label:"工兵", desc:"工程/攻城", manpower:12 },
+    cavalry:  { cost:80, range:0.072, fireRate:1.43, damage:11.2, speed:0.0648, maxStr:90, bulletSpeed:1.26, sym:"🏇", label:"骑兵", desc:"高速机动/包抄", manpower:10 },
+    artillery:{ cost:120, range:0.45, fireRate:5, damage:35, speed:0.0259, maxStr:70, bulletSpeed:2.52, sym:"💥", label:"炮兵", desc:"远程火力压制", manpower:8 },
+    navy:     { cost:500, range:1.2, fireRate:1.5, damage:80, speed:0.0675, maxStr:500, bulletSpeed:12, sym:"🚢", label:"海军", desc:"巨舰大炮", manpower:5 },
 };
 
 function initProvinceData() {
@@ -201,29 +208,29 @@ function createFactoryEntity(provinceId, country) {
 
 function initCountries() {
     const init = {
-        GERMANY: { treasury: 550, stability: 85, flag: 0 },
-        FRANCE: { treasury: 450, stability: 80, flag: 1 },
-        UK: { treasury: 650, stability: 90, flag: 2 },
-        BELGIUM: { treasury: 80, stability: 80, flag: 3 },
-        NETHERLANDS: { treasury: 100, stability: 85, flag: 4 },
-        LUXEMBOURG: { treasury: 15, stability: 90, flag: 5 },
-        SWITZERLAND: { treasury: 70, stability: 95, flag: 6 },
-        DENMARK: { treasury: 60, stability: 90, flag: 7 },
-        ITALY: { treasury: 280, stability: 75, flag: 8 },
-        AUSTRIA_HUNGARY: { treasury: 350, stability: 70, flag: 9 },
-        SPAIN: { treasury: 220, stability: 80, flag: 10 },
-        PORTUGAL: { treasury: 70, stability: 85, flag: 11 },
-        RUSSIA: { treasury: 400, stability: 60, flag: 12 },
-        TURKEY: { treasury: 250, stability: 55, flag: 13 },
-        SERBIA: { treasury: 50, stability: 70, flag: 14 },
-        MONTENEGRO: { treasury: 20, stability: 75, flag: 15 },
-        BULGARIA: { treasury: 60, stability: 65, flag: 16 },
-        ROMANIA: { treasury: 100, stability: 60, flag: 17 },
-        GREECE: { treasury: 70, stability: 70, flag: 18 },
-        ALBANIA: { treasury: 15, stability: 50, flag: 19 },
-        NORWAY: { treasury: 50, stability: 90, flag: 20 },
-        SWEDEN: { treasury: 100, stability: 85, flag: 21 },
-        FINLAND: { treasury: 40, stability: 80, flag: 22 },
+        GERMANY: { treasury: 600, stability: 85, flag: 0 },
+        FRANCE: { treasury: 600, stability: 80, flag: 1 },
+        UK: { treasury: 600, stability: 90, flag: 2 },
+        BELGIUM: { treasury: 600, stability: 80, flag: 3 },
+        NETHERLANDS: { treasury: 600, stability: 85, flag: 4 },
+        LUXEMBOURG: { treasury: 600, stability: 90, flag: 5 },
+        SWITZERLAND: { treasury: 600, stability: 95, flag: 6 },
+        DENMARK: { treasury: 600, stability: 90, flag: 7 },
+        ITALY: { treasury: 600, stability: 75, flag: 8 },
+        AUSTRIA_HUNGARY: { treasury: 600, stability: 70, flag: 9 },
+        SPAIN: { treasury: 600, stability: 80, flag: 10 },
+        PORTUGAL: { treasury: 600, stability: 85, flag: 11 },
+        RUSSIA: { treasury: 600, stability: 60, flag: 12 },
+        TURKEY: { treasury: 600, stability: 55, flag: 13 },
+        SERBIA: { treasury: 600, stability: 70, flag: 14 },
+        MONTENEGRO: { treasury: 600, stability: 75, flag: 15 },
+        BULGARIA: { treasury: 600, stability: 65, flag: 16 },
+        ROMANIA: { treasury: 600, stability: 60, flag: 17 },
+        GREECE: { treasury: 600, stability: 70, flag: 18 },
+        ALBANIA: { treasury: 600, stability: 50, flag: 19 },
+        NORWAY: { treasury: 600, stability: 90, flag: 20 },
+        SWEDEN: { treasury: 600, stability: 85, flag: 21 },
+        FINLAND: { treasury: 600, stability: 80, flag: 22 },
     };
     for (let [c, d] of Object.entries(init)) {
         let pop = (POPULATION[c] || 1) * 1000; // convert to thousands
@@ -231,7 +238,7 @@ function initCountries() {
     }
 }
 
-function createDivision(provinceId, country, type) {
+function createDivision(provinceId, country, type, skipCost) {
     let pd = G.provinceData[provinceId];
     if (!pd) return null;
     type = type || 'infantry';
@@ -239,12 +246,14 @@ function createDivision(provinceId, country, type) {
     if (!ut) return null;
     let cost = ut.cost;
     let cData = G.countries[country];
-    if (!cData || cData.treasury < cost) return null;
-    // Check manpower
-    let manpowerCost = ut.manpower || 10;
-    if (cData.manpower < manpowerCost) { addGameLog("人口不足！"); return null; }
-    cData.treasury -= cost;
-    cData.manpower -= manpowerCost;
+    if (!skipCost) {
+        if (!cData || cData.treasury < cost) return null;
+        // Check manpower
+        let manpowerCost = ut.manpower || 10;
+        if (cData.manpower < manpowerCost) { addGameLog("人口不足！"); return null; }
+        cData.treasury -= cost;
+        cData.manpower -= manpowerCost;
+    }
     let c = pd.center;
     // Random offset around province center (avoid stacking)
     let offX = (Math.random() - 0.5) * 0.06;
@@ -252,7 +261,7 @@ function createDivision(provinceId, country, type) {
 
     let div = {
         id: G.divIdCounter++,
-        name: country + ' ' + G.divIdCounter + '.',
+        name: '(' + (COUNTRY_CN[country] || country) + ') ' + G.divIdCounter + '.',
         type: type,
         province: provinceId,
         country: country,
@@ -261,11 +270,8 @@ function createDivision(provinceId, country, type) {
         rx: c[0] + offX, ry: c[1] + offY,
         state: 'idle',
         targetX: null, targetY: null,
-        attackTarget: null,
-        focusTarget: null,
-        focusFactory: null,
-        fireCooldown: 0,
-        exp: 0,
+        attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
+        fireCooldown: 0, maxFireCd: 0, exp: 0,
     };
     G.divisions.push(div);
     pd.garrison = (pd.garrison || 0) + 1;
@@ -285,10 +291,10 @@ function isVassalOf(vassal, suzerain) { return VASSAL_OF[vassal] === suzerain; }
 // 阵营判断：同一阵营视为盟友
 function isSameFaction(a, b) {
     if (!a || !b || a === b) return false;
-    // 同盟国阵营核心
-    let centralCore = ['GERMANY', 'AUSTRIA_HUNGARY'];
-    // 协约国阵营核心
-    let ententeCore = ['FRANCE', 'UK'];
+    // 同盟国阵营核心（德国、奥匈、保加利亚、奥斯曼）
+    let centralCore = ['GERMANY', 'AUSTRIA_HUNGARY', 'BULGARIA', 'TURKEY'];
+    // 协约国阵营核心（法国、英国、俄国、塞尔维亚）
+    let ententeCore = ['FRANCE', 'UK', 'RUSSIA', 'SERBIA'];
     // 通过联盟链判断
     function belongsTo(c, core) {
         if (core.includes(c)) return true;
@@ -333,14 +339,24 @@ function initCities() {
             }
             if (provId) break;
         }
+        // 首都500血，大城市200血，小城市100血
+        let maxHp = city.isCapital ? 500 : (isMajorCity(city.id) ? 200 : 100);
         G.cities[city.id] = {
             ...city,
-            hp: 50,
-            maxHp: 50,
+            hp: maxHp,
+            maxHp: maxHp,
             provinceId: provId,
             garrison: 0,
             owner: city.country,
         };
+    }
+    // 预计算省份→城市映射，避免每帧 O(provinces*cities) 扫描
+    G._provinceCities = {};
+    for (let cid in G.cities) {
+        let ct = G.cities[cid];
+        if (!ct || !ct.provinceId) continue;
+        if (!G._provinceCities[ct.provinceId]) G._provinceCities[ct.provinceId] = [];
+        G._provinceCities[ct.provinceId].push(ct);
     }
 }
 
@@ -379,24 +395,27 @@ function removeDivision(d) {
 // === 保障独立系统 ===
 function guaranteeIndependence(guarantor, target) {
     if (!G.guarantees) G.guarantees = {};
-    if (!G.guarantees[guarantor]) G.guarantees[guarantor] = [];
+    if (!G.guarantees[guarantor] || !Array.isArray(G.guarantees[guarantor])) G.guarantees[guarantor] = [];
     if (!G.guarantees[guarantor].includes(target)) {
         G.guarantees[guarantor].push(target);
     }
 }
 function removeGuarantee(guarantor, target) {
     if (!G.guarantees || !G.guarantees[guarantor]) return;
+    if (!Array.isArray(G.guarantees[guarantor])) return;
     G.guarantees[guarantor] = G.guarantees[guarantor].filter(c => c !== target);
 }
 function getGuarantees(guarantor) {
     if (!G.guarantees || !G.guarantees[guarantor]) return [];
+    if (!Array.isArray(G.guarantees[guarantor])) return [];
     return G.guarantees[guarantor];
 }
 function getGuarantors(target) {
     if (!G.guarantees) return [];
     let list = [];
     for (let g of Object.keys(G.guarantees)) {
-        if (G.guarantees[g].includes(target)) list.push(g);
+        let val = G.guarantees[g];
+        if (Array.isArray(val) && val.includes(target)) list.push(g);
     }
     return list;
 }
@@ -456,6 +475,21 @@ function declareWar(attacker, defender) {
         addGameLog((COUNTRY_CN[g]||g) + "因保障义务向" + (COUNTRY_CN[attacker]||attacker) + "宣战");
     }
 
+    // 同盟义务：defender的同盟国自动向attacker宣战
+    if (G.alliances && G.alliances[defender]) {
+        for (let ally in G.alliances[defender]) {
+            if (ally === attacker) continue;
+            if (G.atWar[attacker] && G.atWar[attacker][ally]) continue;
+            if (!G.atWar[attacker]) G.atWar[attacker] = {};
+            if (!G.atWar[ally]) G.atWar[ally] = {};
+            G.atWar[attacker][ally] = true;
+            G.atWar[ally][attacker] = true;
+            queueNews("⚔️ " + (COUNTRY_CN[ally]||ally) + "履行同盟义务，向" + (COUNTRY_CN[attacker]||attacker) + "宣战！");
+            G.warAnnouncements[[attacker, ally].sort().join('-')] = true;
+            addGameLog((COUNTRY_CN[ally]||ally) + "因同盟义务向" + (COUNTRY_CN[attacker]||attacker) + "宣战");
+        }
+    }
+
     // 对同阵营宣战 → 自动宣战阵营内所有国家
     cascadeFactionWar(attacker, defender);
     return true;
@@ -502,10 +536,10 @@ function cascadeFactionWar(attacker, defender) {
 // 获取国家所属阵营名称
 function getFaction(c) {
     if (!c) return null;
-    if (c === 'GERMANY' || c === 'AUSTRIA_HUNGARY') return '同盟国';
-    if (c === 'FRANCE' || c === 'UK') return '协约国';
-    let centralCore = ['GERMANY', 'AUSTRIA_HUNGARY'];
-    let ententeCore = ['FRANCE', 'UK'];
+    if (c === 'GERMANY' || c === 'AUSTRIA_HUNGARY' || c === 'BULGARIA' || c === 'TURKEY') return '同盟国';
+    if (c === 'FRANCE' || c === 'UK' || c === 'RUSSIA' || c === 'SERBIA') return '协约国';
+    let centralCore = ['GERMANY', 'AUSTRIA_HUNGARY', 'BULGARIA', 'TURKEY'];
+    let ententeCore = ['FRANCE', 'UK', 'RUSSIA', 'SERBIA'];
     function belongsTo(cc, core) {
         if (core.includes(cc)) return true;
         if (G.alliances && G.alliances[cc]) {
@@ -522,8 +556,8 @@ function getFaction(c) {
 
 // 获取同一阵营的所有成员
 function getFactionMembers(country) {
-    let centralCore = ['GERMANY', 'AUSTRIA_HUNGARY'];
-    let ententeCore = ['FRANCE', 'UK'];
+    let centralCore = ['GERMANY', 'AUSTRIA_HUNGARY', 'BULGARIA', 'TURKEY'];
+    let ententeCore = ['FRANCE', 'UK', 'RUSSIA', 'SERBIA'];
     function belongsTo(c, core) {
         if (core.includes(c)) return true;
         if (G.alliances && G.alliances[c]) {
@@ -657,17 +691,19 @@ function addGameLog(msg) {
 
 // ===== 城市点击检测 =====
 const MAJOR_CITY_IDS = new Set([
-    // 德国
-    'hamburg','munich','cologne','frankfurt','leipzig','dresden','nuremberg','breslau',
-    // 法国
-    'lyon','marseille','bordeaux','lille','toulouse','nice','nantes','strasbourg','nancy',
+    // 德国（17个非首都大城市含柏林，法国12个含首都巴黎，比德国少5个）
+    'hamburg','munich','cologne','frankfurt','leipzig','dresden','nuremberg','breslau','danzig','konigsberg',
+    'bremen','hannover','aachen','rostock','kiel','strasbourg',
+    // 法国（11个非首都大城市）
+    'lyon','marseille','bordeaux','lille','toulouse','nice','nantes',
+    'reims','verdun','amiens','orleans_fr',
     // 英国
     'manchester','birmingham','glasgow','liverpool','bristol','edinburgh','dublin','leeds',
     // 意大利
     'naples','turin','milan','genoa','venice','florence','palermo','trieste',
     // 俄国
-    'saint_petersburg','moscow','kiev','odessa','warsaw','minsk','riga','samara',
-    'kharkov','ekaterinburg','rostov','nizhny','kazan','sevastopol','smolensk',
+    'saint_petersburg','moscow','kiev','odessa','warsaw','minsk','riga',
+    'rostov','sevastopol',
     // 奥匈
     'budapest','prague','krakow','zagreb','bratislava','lemberg','kassa','brasso',
     // 西班牙
@@ -717,9 +753,50 @@ function isMajorCity(cityId) {
 
 function findCityAtScreen(sx, sy) {
     if (typeof worldToScreen === 'undefined') return null;
-    let best = null, bestDist = 20;
+    const capitalZoom = 0.15;
+    const majorZoom = 0.35;
+    const minorZoom = 0.7;
+    // 大城市列表（与MAJOR_CITY_IDS保持一致）
+    const majorCities = new Set([
+        // 德国（17个含首都）
+        'hamburg','munich','cologne','frankfurt','leipzig','dresden','nuremberg','breslau','danzig','konigsberg',
+        'bremen','hannover','aachen','rostock','kiel','strasbourg',
+        // 法国（11个非首都）
+        'lyon','marseille','bordeaux','lille','toulouse','nice','nantes',
+        'reims','verdun','amiens','orleans_fr',
+        'manchester','birmingham','glasgow','liverpool','bristol','edinburgh','dublin','leeds',
+        'naples','turin','milan','genoa','venice','florence','palermo','trieste',
+// 俄国
+        'saint_petersburg','moscow','kiev','odessa','warsaw','minsk','riga',
+        'rostov','sevastopol',
+        'budapest','prague','krakow','zagreb','bratislava','lemberg','kassa','brasso',
+        'barcelona','seville','bilbao','valencia_sp','zaragoza',
+        'izmir','ankara','trabzon',
+        'rotterdam','thehague',
+        'antwerp','liege','charleroi',
+        'gothenburg','malmo',
+        'bergen',
+        'brasov','cluj','iasi','constanta',
+        'plovdiv','varna',
+        'thessaloniki',
+        'porto',
+        'turku',
+        'aarhus',
+        'zurich','basel',
+        'nis',
+        'cetinje',
+        'durres',
+        'luxembourg',
+    ]);
+    let best = null, bestDist = 25;
     for (let city of CITIES) {
         let [cx, cy] = worldToScreen(city.lon, city.lat);
+        // 视野外不可点击
+        if (cx < -50 || cx > canvas.width + 50 || cy < -50 || cy > canvas.height + 50) continue;
+        // 缩放级别可见性检查
+        if (city.isCapital && zoom <= capitalZoom) continue;
+        if (!city.isCapital && !majorCities.has(city.id) && !isMajorCity(city.id) && zoom <= minorZoom) continue;
+        if (!city.isCapital && (majorCities.has(city.id) || isMajorCity(city.id)) && zoom <= majorZoom) continue;
         let dist = Math.hypot(sx - cx, sy - cy);
         if (dist < bestDist) { best = city; bestDist = dist; }
     }

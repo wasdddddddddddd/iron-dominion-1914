@@ -1,7 +1,7 @@
 // Iron & Dominion 1914 — 渲染引擎（省份版）
 
 const canvas = document.getElementById("gameCanvas");
-const ctx = canvas.getContext("2d");
+const ctx = canvas.getContext("2d", { willReadFrequently: false });
 
 let camX = 10, camY = 51, zoom = 0.5;
 let isDragging = false, dragStartX, dragStartY, dragCamStartX, dragCamStartY;
@@ -102,6 +102,28 @@ function drawOcean() {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 }
 
+function drawCoastGrid() {
+    ctx.beginPath();
+    for (let p of PROVINCES) {
+        if (p.x >= 900) continue;
+        for (let ring of p.r) {
+            if (ring.length < 3) continue;
+            const first = ring[0];
+            ctx.moveTo(...worldToScreen(first[0], first[1]));
+            for (let i = 1; i < ring.length; i++) {
+                ctx.lineTo(...worldToScreen(ring[i][0], ring[i][1]));
+            }
+            ctx.closePath();
+        }
+    }
+    ctx.strokeStyle = "rgba(80,200,240,0.30)";
+    ctx.lineWidth = 16;
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(80,200,240,0.65)";
+    ctx.lineWidth = 6;
+    ctx.stroke();
+}
+
 function drawRivers() {
     if (typeof RIVERS === "undefined") return;
     ctx.save();
@@ -128,37 +150,36 @@ function drawRivers() {
 }
 
 function drawProvinces() {
-    let now = Date.now() / 1000;
+    let isFactionView = zoom <= MIN_ZOOM * 1.5;
+    let centralPowers = ['GERMANY','AUSTRIA_HUNGARY','BULGARIA','TURKEY'];
+    let entente = ['FRANCE','UK','RUSSIA','SERBIA','BELGIUM','MONTENEGRO'];
     for (let p of PROVINCES) {
-        let color = COUNTRY_COLORS[p.c] || "#888";
         let pd = G.provinceData[p.id];
-
-        // Contested: both friendly and enemy inside — blend
-        if (pd && pd.contested) {
-            let origColor = COUNTRY_COLORS[pd.originalCountry] || "#888";
-            let enemyColor = COUNTRY_COLORS[p.c] || "#888";
-            let blend = 0.5 + 0.5 * Math.sin(now * 2 + p.id.length);
-            for (let ring of p.r) {
-                if (ring.length < 3) continue;
-                ctx.beginPath();
-                const first = ring[0];
-                ctx.moveTo(...worldToScreen(first[0], first[1]));
-                for (let i = 1; i < ring.length; i++) {
-                    const pt = ring[i];
-                    ctx.lineTo(...worldToScreen(pt[0], pt[1]));
-                }
-                ctx.closePath();
-                // Layer original, then overlay enemy with varying alpha
-                ctx.fillStyle = origColor;
-                ctx.fill();
-                ctx.fillStyle = enemyColor;
-                ctx.globalAlpha = blend * 0.4;
-                ctx.fill();
-                ctx.globalAlpha = 1;
-            }
+        let origCountry = (pd && pd.originalCountry) ? pd.originalCountry : p.c;
+        let color;
+        if (isFactionView) {
+            if (centralPowers.includes(origCountry)) color = COUNTRY_COLORS['GERMANY'];
+            else if (entente.includes(origCountry)) color = COUNTRY_COLORS['FRANCE'];
+            else color = "#c8a830";
+        } else {
+            color = COUNTRY_COLORS[origCountry] || "#888";
         }
-        // Occupied: enemy owns, no friendly
-        else if (pd && pd.originalCountry && pd.country !== pd.originalCountry) {
+
+        // 检查该省份内所有城市是否全部被占领（使用预计算缓存）
+        let citiesHere = G._provinceCities ? (G._provinceCities[p.id] || []) : Object.values(G.cities).filter(c => c.provinceId === p.id);
+        let allCitiesCaptured = citiesHere.length > 0 && citiesHere.every(c => c.owner !== origCountry);
+        let countrySurrendered = G.surrendered && G.surrendered[origCountry] === true;
+
+        if (allCitiesCaptured || countrySurrendered) {
+            // 省内所有城市都被占领，显示占领国颜色+斜线
+            let capturerColor;
+            if (isFactionView) {
+                if (centralPowers.includes(p.c)) capturerColor = COUNTRY_COLORS['GERMANY'];
+                else if (entente.includes(p.c)) capturerColor = COUNTRY_COLORS['FRANCE'];
+                else capturerColor = "#c8a830";
+            } else {
+                capturerColor = COUNTRY_COLORS[p.c] || "#888";
+            }
             for (let ring of p.r) {
                 if (ring.length < 3) continue;
                 ctx.beginPath();
@@ -169,7 +190,7 @@ function drawProvinces() {
                     ctx.lineTo(...worldToScreen(pt[0], pt[1]));
                 }
                 ctx.closePath();
-                ctx.fillStyle = color;
+                ctx.fillStyle = capturerColor;
                 ctx.fill();
                 // Subtle diagonal hatch
                 ctx.save();
@@ -190,9 +211,8 @@ function drawProvinces() {
                 }
                 ctx.restore();
             }
-        }
-        // Normal: own original territory
-        else {
+        } else {
+            // 未完全占领：显示原始国家颜色
             for (let ring of p.r) {
                 if (ring.length < 3) continue;
                 ctx.beginPath();
@@ -210,7 +230,85 @@ function drawProvinces() {
     }
 }
 
+// ---- 预计算国际边界（两国交界的粗黑线） ----
+let INTL_BORDERS = [];
+
+function precomputeInternationalBorders() {
+    const TOLERANCE = 0.006;
+    let edgeMap = {};
+    for (let p of PROVINCES) {
+        if (p.x >= 900) continue;
+        for (let ring of p.r) {
+            if (ring.length < 3) continue;
+            for (let i = 0; i < ring.length; i++) {
+                let a1 = ring[i], a2 = ring[(i + 1) % ring.length];
+                // 生成规范键（排序端点 + 四舍五入到容差）
+                let sx1, sy1, sx2, sy2;
+                if (a1[0] < a2[0] - 1e-7 || (Math.abs(a1[0] - a2[0]) < 1e-7 && a1[1] < a2[1])) {
+                    sx1 = a1[0]; sy1 = a1[1]; sx2 = a2[0]; sy2 = a2[1];
+                } else {
+                    sx1 = a2[0]; sy1 = a2[1]; sx2 = a1[0]; sy2 = a1[1];
+                }
+                let rx1 = Math.round(sx1 / TOLERANCE), ry1 = Math.round(sy1 / TOLERANCE);
+                let rx2 = Math.round(sx2 / TOLERANCE), ry2 = Math.round(sy2 / TOLERANCE);
+                let key = rx1 + ',' + ry1 + '-' + rx2 + ',' + ry2;
+                if (!edgeMap[key]) {
+                    edgeMap[key] = { countries: new Set(), edge: { x1: a1[0], y1: a1[1], x2: a2[0], y2: a2[1] } };
+                }
+                edgeMap[key].countries.add(p.c);
+            }
+        }
+    }
+    INTL_BORDERS = [];
+    for (let key in edgeMap) {
+        if (edgeMap[key].countries.size > 1) {
+            INTL_BORDERS.push(edgeMap[key].edge);
+        }
+    }
+}
+precomputeInternationalBorders();
+
+// ---- 预计算海岸线（陆地与海洋交界的边） ----
+let COASTLINE_EDGES = [];
+
+function precomputeCoastline() {
+    const TOLERANCE = 0.006;
+    let edgeMap = {};
+    for (let p of PROVINCES) {
+        let isSea = p.x >= 900;
+        for (let ring of p.r) {
+            if (ring.length < 3) continue;
+            for (let i = 0; i < ring.length; i++) {
+                let a1 = ring[i], a2 = ring[(i + 1) % ring.length];
+                let sx1, sy1, sx2, sy2;
+                if (a1[0] < a2[0] - 1e-7 || (Math.abs(a1[0] - a2[0]) < 1e-7 && a1[1] < a2[1])) {
+                    sx1 = a1[0]; sy1 = a1[1]; sx2 = a2[0]; sy2 = a2[1];
+                } else {
+                    sx1 = a2[0]; sy1 = a2[1]; sx2 = a1[0]; sy2 = a1[1];
+                }
+                let rx1 = Math.round(sx1 / TOLERANCE), ry1 = Math.round(sy1 / TOLERANCE);
+                let rx2 = Math.round(sx2 / TOLERANCE), ry2 = Math.round(sy2 / TOLERANCE);
+                let key = rx1 + ',' + ry1 + '-' + rx2 + ',' + ry2;
+                if (!edgeMap[key]) {
+                    edgeMap[key] = { hasLand: false, hasSea: false, edge: { x1: a1[0], y1: a1[1], x2: a2[0], y2: a2[1] } };
+                }
+                if (isSea) edgeMap[key].hasSea = true;
+                else edgeMap[key].hasLand = true;
+            }
+        }
+    }
+    COASTLINE_EDGES = [];
+    for (let key in edgeMap) {
+        let e = edgeMap[key];
+        if (e.hasLand && e.hasSea) {
+            COASTLINE_EDGES.push(e.edge);
+        }
+    }
+}
+precomputeCoastline();
+
 function drawBorders() {
+    // 先画所有省份细边框
     for (let p of PROVINCES) {
         for (let ring of p.r) {
             if (ring.length < 3) continue;
@@ -225,6 +323,35 @@ function drawBorders() {
             ctx.lineWidth = BORDER_WIDTH;
             ctx.stroke();
         }
+    }
+    // 再画国际边界——粗黑线
+    if (INTL_BORDERS.length > 0) {
+        ctx.strokeStyle = "rgba(0,0,0,0.55)";
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        for (let seg of INTL_BORDERS) {
+            let [sx1, sy1] = worldToScreen(seg.x1, seg.y1);
+            let [sx2, sy2] = worldToScreen(seg.x2, seg.y2);
+            ctx.moveTo(sx1, sy1);
+            ctx.lineTo(sx2, sy2);
+        }
+        ctx.stroke();
+    }
+    // 再画海岸线——淡蓝色（宽底+细边，向陆地方向加粗视觉效果）
+    if (COASTLINE_EDGES.length > 0) {
+        ctx.strokeStyle = "rgba(80,200,240,0.35)";
+        ctx.lineWidth = 8;
+        ctx.beginPath();
+        for (let seg of COASTLINE_EDGES) {
+            let [sx1, sy1] = worldToScreen(seg.x1, seg.y1);
+            let [sx2, sy2] = worldToScreen(seg.x2, seg.y2);
+            ctx.moveTo(sx1, sy1);
+            ctx.lineTo(sx2, sy2);
+        }
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(80,200,240,0.80)";
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
     }
 }
 
@@ -346,19 +473,21 @@ function drawCities() {
     const majorZoom = 0.35;    // 较大城市在zoom>0.35时显示
     const minorZoom = 0.7;     // 小城市在zoom>0.7时显示
 
-    // 较大城市列表（非首都的历史重要城市用🏰）
+    // 较大城市列表（与MAJOR_CITY_IDS保持一致）
     const majorCities = new Set([
-        // 德国
-        'hamburg','munich','cologne','frankfurt','leipzig','dresden','nuremberg','breslau',
-        // 法国
-        'lyon','marseille','bordeaux','lille','toulouse','nice','nantes','strasbourg','nancy',
+        // 德国（17个含首都）
+        'hamburg','munich','cologne','frankfurt','leipzig','dresden','nuremberg','breslau','danzig','konigsberg',
+        'bremen','hannover','aachen','rostock','kiel','strasbourg',
+        // 法国（11个非首都）
+        'lyon','marseille','bordeaux','lille','toulouse','nice','nantes',
+        'reims','verdun','amiens','orleans_fr',
         // 英国
         'manchester','birmingham','glasgow','liverpool','bristol','edinburgh','dublin','leeds',
         // 意大利
         'naples','turin','milan','genoa','venice','florence','palermo','trieste',
         // 俄国
-        'saint_petersburg','moscow','kiev','odessa','warsaw','minsk','riga','samara',
-        'kharkov','ekaterinburg','rostov','nizhny','kazan','sevastopol','smolensk',
+        'saint_petersburg','moscow','kiev','odessa','warsaw','minsk','riga',
+        'rostov','sevastopol',
         // 奥匈
         'budapest','prague','krakow','zagreb','bratislava','lemberg','kassa','brasso',
         // 西班牙
@@ -402,8 +531,9 @@ function drawCities() {
 
         // 根据城市等级和缩放决定是否显示
         if (city.isCapital && zoom <= capitalZoom) continue;
-        if (!city.isCapital && majorCities.has(city.id) && zoom <= majorZoom) continue;
-        if (!city.isCapital && !majorCities.has(city.id) && zoom <= minorZoom) continue;
+        let isMajor = majorCities.has(city.id) || (typeof isMajorCity === 'function' && isMajorCity(city.id));
+        if (!city.isCapital && isMajor && zoom <= majorZoom) continue;
+        if (!city.isCapital && !isMajor && zoom <= minorZoom) continue;
 
         let cityData = G.cities[city.id];
         let hp = cityData ? cityData.hp : 50;
@@ -414,7 +544,7 @@ function drawCities() {
         let emoji, fontSize, nameColor;
         if (city.isCapital) {
             emoji = "🏛️"; fontSize = 22; nameColor = "#ffd700";
-        } else if (majorCities.has(city.id)) {
+        } else if (isMajor) {
             emoji = "🏰"; fontSize = 18; nameColor = "#e8d0a0";
         } else {
             emoji = "🏠"; fontSize = 14; nameColor = "#e8e0d0";
@@ -444,6 +574,88 @@ function drawCities() {
             ctx.fillRect(sx - barW/2, sy + 20, barW * Math.max(0, hp / maxHp), barH);
         }
 
+        // 占领国旗
+        if (cityData && cityData.occupierFlag) {
+            let flagColor = COUNTRY_COLORS[cityData.occupierFlag] || "#888";
+            // 占领半径圈
+            let occRadius = fontSize + 16;
+            ctx.beginPath(); ctx.arc(sx, sy - 10, occRadius, 0, Math.PI * 2);
+            ctx.fillStyle = flagColor.replace(')', ',0.12)').replace('rgb', 'rgba');
+            if (flagColor.startsWith('#')) {
+                let r = parseInt(flagColor.slice(1,3), 16);
+                let g = parseInt(flagColor.slice(3,5), 16);
+                let b = parseInt(flagColor.slice(5,7), 16);
+                ctx.fillStyle = `rgba(${r},${g},${b},0.12)`;
+            }
+            ctx.fill();
+            ctx.strokeStyle = flagColor.replace(')', ',0.3)').replace('rgb', 'rgba');
+            if (flagColor.startsWith('#')) {
+                let r = parseInt(flagColor.slice(1,3), 16);
+                let g = parseInt(flagColor.slice(3,5), 16);
+                let b = parseInt(flagColor.slice(5,7), 16);
+                ctx.strokeStyle = `rgba(${r},${g},${b},0.3)`;
+            }
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            let flagY = sy - 14;
+            ctx.fillStyle = flagColor;
+            ctx.fillRect(sx - 7, flagY - 7, 14, 10);
+            ctx.strokeStyle = "rgba(0,0,0,0.5)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(sx - 7, flagY - 7, 14, 10);
+            ctx.font = "7px sans-serif";
+            ctx.fillStyle = "#fff";
+            ctx.textAlign = "center";
+            ctx.fillText((COUNTRY_CN[cityData.occupierFlag] || cityData.occupierFlag).substring(0, 2), sx, flagY);
+        }
+
+        // 生产进度条（蓝色）
+        if (G.buildQueue && G.playerCountry && city.owner === G.playerCountry) {
+            let building = G.buildQueue.find(bq => bq.cityId === city.id);
+            if (building) {
+                let barW = 30, barH = 4;
+                let progress = building.totalDays > 0 ? Math.max(0, 1 - building.days / building.totalDays) : 0;
+                let barY = sy - 28;
+                ctx.fillStyle = "rgba(0,0,0,0.7)";
+                ctx.fillRect(sx - barW/2 - 1, barY, barW + 2, barH + 2);
+                ctx.fillStyle = "#4a8ad4";
+                ctx.fillRect(sx - barW/2, barY + 1, barW * progress, barH);
+                // 小图标标识
+                let icon = building.type === 'factory' ? '🏭' : (UNIT_TYPES[building.unitType] ? UNIT_TYPES[building.unitType].sym : '⚔️');
+                ctx.font = "8px sans-serif";
+                ctx.fillStyle = "rgba(255,255,255,0.7)";
+                ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+                ctx.fillText(icon, sx, barY - 2);
+            }
+        }
+
+        // 驻军模式城市高亮（海军驻守时不亮城市，只亮海军节点）
+        if (G.garrisonMode && G.garrisonUnitIds && G.garrisonUnitIds.length > 0) {
+            let hasNavy = G.garrisonUnitIds.some(uid => {
+                let d = G.divisions.find(x => x.id === uid);
+                return d && d.type === 'navy';
+            });
+            if (!hasNavy) {
+                let ct = Date.now() / 1000;
+                let pulse = 0.5 + 0.5 * Math.sin(ct * 4);
+                ctx.fillStyle = "rgba(100,200,255," + (0.15 + pulse * 0.15) + ")";
+                ctx.beginPath();
+                ctx.arc(sx, sy - 10, fontSize + 8, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = "rgba(100,200,255," + (0.5 + pulse * 0.4) + ")";
+                ctx.lineWidth = 2.5;
+                ctx.stroke();
+                // 驻军图标
+                ctx.font = "12px sans-serif";
+                ctx.fillStyle = "#fff";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText("🛡️", sx, sy - 10 - fontSize);
+            }
+        }
+
         // Owner indicator (colored ring)
         if (owner) {
             ctx.beginPath(); ctx.arc(sx, sy - 10, fontSize/2 + 2, 0, Math.PI*2);
@@ -456,8 +668,33 @@ function drawCities() {
     }
 }
 
+function drawFireZones() {
+    if (!G.fireZones || G.fireZones.length === 0) return;
+    ctx.save();
+    for (let fz of G.fireZones) {
+        let [sx, sy] = worldToScreen(fz.x, fz.y);
+        if (sx < -100 || sx > canvas.width + 100 || sy < -100 || sy > canvas.height + 100) continue;
+        let rPixels = Math.abs(worldToScreen(fz.x + fz.radius, fz.y)[0] - sx);
+        let alpha = Math.max(0.1, fz.life / fz.lifeMax);
+        // 火焰红色范围 + 火焰emoji
+        ctx.beginPath(); ctx.arc(sx, sy, rPixels, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,40,0," + (alpha * 0.2) + ")";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,80,0," + (alpha * 0.5) + ")";
+        ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+        ctx.stroke(); ctx.setLineDash([]);
+        // 火焰emoji
+        ctx.font = (rPixels * 0.8) + "px sans-serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("🔥", sx, sy);
+    }
+    ctx.restore();
+}
+
 function drawFactories() {
     if (!G.factories) return;
+    // 工厂只在缩放到小城市级别（zoom>0.7）时显示
+    if (zoom <= 0.7) return;
     for (let fact of G.factories) {
         if (!fact || fact.hp <= 0) continue;
         let [sx, sy] = worldToScreen(fact.rx, fact.ry);
@@ -482,6 +719,8 @@ function drawFactories() {
 
 function drawNavalBases() {
     if (typeof NAVAL_BASES === 'undefined') return;
+    // 海军节点缩放到大城市级别（zoom>0.35）时显示
+    if (zoom <= 0.35) return;
     for (let nb of NAVAL_BASES) {
         const [sx, sy] = worldToScreen(nb.lon, nb.lat);
         if (sx < -50 || sx > canvas.width + 50 || sy < -50 || sy > canvas.height + 50) continue;
@@ -504,6 +743,29 @@ function drawNavalBases() {
         ctx.lineWidth = 2.5;
         ctx.stroke();
 
+        // 海军驻军模式高亮海军节点
+        if (G.garrisonMode && G.garrisonUnitIds && G.garrisonUnitIds.length > 0) {
+            let hasNavy = G.garrisonUnitIds.some(uid => {
+                let d = G.divisions.find(x => x.id === uid);
+                return d && d.type === 'navy';
+            });
+            if (hasNavy) {
+                let ct = Date.now() / 1000;
+                let pulse = 0.5 + 0.5 * Math.sin(ct * 4);
+                ctx.beginPath(); ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+                ctx.fillStyle = "rgba(100,200,255," + (0.15 + pulse * 0.15) + ")";
+                ctx.fill();
+                ctx.strokeStyle = "rgba(100,200,255," + (0.5 + pulse * 0.4) + ")";
+                ctx.lineWidth = 2.5;
+                ctx.stroke();
+                ctx.font = "12px sans-serif";
+                ctx.fillStyle = "#fff";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText("🛡️", sx, sy - 18);
+            }
+        }
+
         // Name label
         ctx.font = 'bold 9px sans-serif';
         ctx.fillStyle = '#fff';
@@ -516,6 +778,34 @@ function drawNavalBases() {
         ctx.font = '8px sans-serif';
         ctx.fillStyle = 'rgba(180,210,255,0.7)';
         ctx.fillText(nb.region.replace(/_/g, ' '), sx, sy + 25);
+
+        // 海军建造进度条
+        if (G.navyBuildQueue && G.playerCountry && nb.country === G.playerCountry) {
+            let nodeId = null;
+            for (let id in G.navyNodes) {
+                if (G.navyNodes[id].country === G.playerCountry &&
+                    Math.abs(G.navyNodes[id].lon - nb.lon) < 0.01 &&
+                    Math.abs(G.navyNodes[id].lat - nb.lat) < 0.01) {
+                    nodeId = id; break;
+                }
+            }
+            if (nodeId) {
+                let building = G.navyBuildQueue.find(nq => nq.nodeId === nodeId);
+                if (building) {
+                    let barW = 36, barH = 4;
+                    let progress = building.totalDays > 0 ? Math.max(0, 1 - building.days / building.totalDays) : 0;
+                    let barY = sy + 38;
+                    ctx.fillStyle = "rgba(0,0,0,0.7)";
+                    ctx.fillRect(sx - barW/2 - 1, barY, barW + 2, barH + 2);
+                    ctx.fillStyle = "#4a8ad4";
+                    ctx.fillRect(sx - barW/2, barY + 1, barW * progress, barH);
+                    ctx.font = "7px sans-serif";
+                    ctx.fillStyle = "rgba(200,220,255,0.9)";
+                    ctx.textAlign = "center";
+                    ctx.fillText("🚢", sx, barY - 2);
+                }
+            }
+        }
 
         ctx.restore();
     }
@@ -694,7 +984,7 @@ function drawGravestones() {
 }
 
 // ---- 主渲染 ----
-function render() { window._sibBtns = [];
+function render() { window._sibBtns = []; window._sibFormBtn = []; window._sidePanelRect = {}; G._countryFlagBtns = [];
     try {
     const w = canvas.width, h = canvas.height;
 
@@ -707,10 +997,36 @@ function render() { window._sibBtns = [];
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
 
-    // Draw provinces directly (no cache — native canvas handles ~200 polygons at 60fps)
+    // ===== Offscreen cache for static geometry =====
+    let viewKey = camX.toFixed(3) + ',' + camY.toFixed(3) + ',' + zoom.toFixed(5) + ',' + w + ',' + h;
+    if (window._staticViewKey !== viewKey) {
+        // Coast grid cache (drawn before province fills)
+        if (!window._coastCache) window._coastCache = document.createElement('canvas');
+        window._coastCache.width = w; window._coastCache.height = h;
+        let cc = window._coastCache.getContext('2d');
+        let sc = ctx;
+        ctx = cc;
+        drawCoastGrid();
+        ctx = sc;
+
+        // Borders + rivers cache (drawn after province fills)
+        if (!window._borderCache) window._borderCache = document.createElement('canvas');
+        window._borderCache.width = w; window._borderCache.height = h;
+        let bc = window._borderCache.getContext('2d');
+        ctx = bc;
+        drawRivers();
+        drawBorders();
+        ctx = sc;
+
+        window._staticViewKey = viewKey;
+    }
+    ctx.drawImage(window._coastCache, 0, 0);
+
+    // Draw provinces directly (native canvas handles ~200 polygons at 60fps)
     drawProvinces();
-    drawRivers();
-    drawBorders();
+
+    // Blit borders + rivers cache on top of province fills
+    ctx.drawImage(window._borderCache, 0, 0);
     drawGravestones();
 
     // UI on top (screen coordinates)
@@ -719,6 +1035,7 @@ function render() { window._sibBtns = [];
     drawCities();
     drawNavalBases();
     drawFactories();
+    drawFireZones();
     drawDivisions();
     drawCountrySidebar();
     drawSelBox();
@@ -727,6 +1044,37 @@ function render() { window._sibBtns = [];
     drawGameTopBar();
     drawBorder();
     drawGameBottomBar();
+    // FPS 左上角显示
+    if (window._fps !== undefined) {
+        ctx.save();
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(4, 4, 50, 16);
+        ctx.fillStyle = window._fps >= 30 ? "#4a4" : "#d44";
+        ctx.font = "bold 11px monospace";
+        ctx.textAlign = "left";
+        ctx.textBaseline = "top";
+        ctx.fillText(window._fps + " FPS", 8, 6);
+        ctx.restore();
+    }
+    // 驻军模式提示
+    if (G.garrisonMode && G.garrisonUnitIds && G.garrisonUnitIds.length > 0) {
+        ctx.save();
+        let bannerY = TOP_BAR_HEIGHT + 4;
+        let bannerX = canvas.width / 2;
+        ctx.fillStyle = "rgba(10,15,26,0.9)";
+        let text = "🛡️ 请点击目标城市以驻守 " + G.garrisonUnitIds.length + " 单位 (ESC取消)";
+        ctx.font = "13px sans-serif";
+        let tw = ctx.measureText(text).width + 20;
+        ctx.fillRect(bannerX - tw/2, bannerY, tw, 28);
+        ctx.strokeStyle = "rgba(100,200,255,0.5)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(bannerX - tw/2, bannerY, tw, 28);
+        ctx.fillStyle = "#8ab8d4";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, bannerX, bannerY + 14);
+        ctx.restore();
+    }
     drawActionBar();
     drawSelectedUnitSidebar();
     drawGameLog();

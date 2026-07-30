@@ -47,9 +47,79 @@ function showCountrySelect() {
 function startGame(countryId) {
     G.playerCountry = countryId;
     document.getElementById('countrySelect').style.display = 'none';
-    G.paused = false;
+    G.paused = true; // 暂停游戏，先看操作指南
     addGameLog("选择国家: " + (COUNTRY_CN[countryId]||countryId));
-    // No initial wars. Player can declare war via diplomacy panel.
+    showTutorial();
+}
+
+function showTutorial() {
+    var isMobile = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+
+    var overlay = document.createElement('div');
+    overlay.id = 'tutorialOverlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.85);z-index:300;display:flex;align-items:center;justify-content:center;font-family:Georgia,serif;';
+
+    var box = document.createElement('div');
+    box.style.cssText = 'background:rgba(20,25,40,0.97);border:1px solid rgba(255,255,255,0.15);border-radius:12px;padding:30px 36px;max-width:560px;width:90vw;max-height:85vh;overflow-y:auto;color:#e0d8c0;text-align:center;';
+
+    var title = document.createElement('div');
+    title.style.cssText = 'font-size:24px;color:#c8b88a;margin-bottom:6px;';
+    title.textContent = '操作指南';
+
+    var subtitle = document.createElement('div');
+    subtitle.style.cssText = 'font-size:12px;color:rgba(255,255,255,0.3);margin-bottom:20px;';
+    subtitle.textContent = isMobile ? '触屏操作' : '键鼠操作';
+
+    var content = document.createElement('div');
+    content.style.cssText = 'text-align:left;font-size:14px;line-height:1.8;';
+
+    if (isMobile) {
+        content.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;">' +
+            '<div style="color:rgba(255,255,255,0.5);">单指拖拽</div><div>平移地图</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">双指捏合</div><div>缩放地图</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">单击单位/城市</div><div>选中目标</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">单击空地</div><div>移动选中单位</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">长按敌方</div><div>集火攻击（右键）</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">点击顶部按钮</div><div>外交/生产/存档</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">点击底栏标签</div><div>切换面板</div>' +
+            '</div>';
+    } else {
+        content.innerHTML = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;">' +
+            '<div style="color:rgba(255,255,255,0.5);">鼠标拖拽</div><div>平移地图</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">滚轮</div><div>缩放地图</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">左键点击单位</div><div>选中 / 框选</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">左键点击空地</div><div>移动选中单位</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">右键点击敌方</div><div>集火攻击目标</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">点击顶部按钮</div><div>外交 / 生产 / 存档</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">点击底栏标签</div><div>切换功能面板</div>' +
+            '<div style="color:rgba(255,255,255,0.5);">空格键</div><div>暂停 / 继续</div>' +
+            '</div>';
+    }
+
+    var hint = document.createElement('div');
+    hint.style.cssText = 'margin-top:10px;font-size:11px;color:rgba(255,255,255,0.25);';
+    hint.textContent = '选中单位后，右下角会出现操作按钮（驻守/巡逻/前线等）';
+
+    var btn = document.createElement('div');
+    btn.style.cssText = 'margin-top:24px;padding:10px 40px;background:rgba(200,184,138,0.2);border:1px solid rgba(200,184,138,0.5);border-radius:6px;color:#c8b88a;font-size:16px;cursor:pointer;display:inline-block;transition:all 0.2s;';
+    btn.textContent = '开始游戏';
+    btn.onmouseenter = function() { btn.style.background = 'rgba(200,184,138,0.35)'; };
+    btn.onmouseleave = function() { btn.style.background = 'rgba(200,184,138,0.2)'; };
+    btn.onclick = function() {
+        overlay.remove();
+        G.paused = false;
+    };
+    // 移动端触摸反馈
+    btn.ontouchstart = function() { btn.style.background = 'rgba(200,184,138,0.35)'; };
+    btn.ontouchend = function() { btn.style.background = 'rgba(200,184,138,0.2)'; };
+
+    box.appendChild(title);
+    box.appendChild(subtitle);
+    box.appendChild(content);
+    box.appendChild(hint);
+    box.appendChild(btn);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
 }
 
 // Show country selection when page loads

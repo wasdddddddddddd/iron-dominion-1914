@@ -156,16 +156,39 @@ function drawNavyPanel(py, ph, startX) {
                     G._navyBtns.push({ type: 'upgrade', nodeId: node.id, x: bx, y: btnY, w: upgradeBtnW, h: 18 });
                 }
 
-                let cost = 500;
-                let canBuild = treasury >= cost && cData && cData.manpower >= 5;
-                let bx2 = x + cardW - buildBtnW - 10;
-                ctx.fillStyle = canBuild ? "rgba(60,180,100,0.5)" : "rgba(100,100,100,0.3)";
-                ctx.fillRect(bx2, btnY, buildBtnW, 18);
-                ctx.fillStyle = canBuild ? "#8ad4a4" : "rgba(255,255,255,0.25)";
-                ctx.font = "9px sans-serif";
-                ctx.textAlign = "center";
-                ctx.fillText("建造舰船 $" + cost, bx2 + buildBtnW / 2, btnY + 5);
-                G._navyBtns.push({ type: 'build', nodeId: node.id, x: bx2, y: btnY, w: buildBtnW, h: 18 });
+                // 检查是否有海军建造队列
+                let nq = G.navyBuildQueue || [];
+                let nodeQueue = nq.filter(n => n.nodeId === node.id);
+                if (nodeQueue.length > 0) {
+                    // 显示建造进度条
+                    let building = nodeQueue[0]; // 当前正在建造的
+                    let progress = building.totalDays > 0 ? Math.max(0, 1 - building.days / building.totalDays) : 0;
+                    let barX = x + 10, barY = btnY + 2, barW = cardW - 20, barH = 5;
+                    ctx.fillStyle = "rgba(255,255,255,0.1)";
+                    ctx.fillRect(barX, barY, barW, barH);
+                    ctx.fillStyle = "#4A8AD4";
+                    ctx.fillRect(barX, barY, barW * progress, barH);
+                    ctx.font = "8px sans-serif";
+                    ctx.fillStyle = "rgba(255,255,255,0.5)";
+                    ctx.textAlign = "center";
+                    ctx.fillText("🚢 建造中 " + Math.floor(progress * 100) + "% (" + Math.ceil(building.days) + "天)", x + cardW / 2, barY + barH + 2);
+                    if (nodeQueue.length > 1) {
+                        ctx.fillStyle = "rgba(255,255,255,0.3)";
+                        ctx.font = "7px sans-serif";
+                        ctx.fillText("队列中还有 " + (nodeQueue.length - 1) + " 艘待建造", x + cardW / 2, barY + barH + 2);
+                    }
+                } else {
+                    let cost = 500;
+                    let canBuild = treasury >= cost && cData && cData.manpower >= 5;
+                    let bx2 = x + cardW - buildBtnW - 10;
+                    ctx.fillStyle = canBuild ? "rgba(60,180,100,0.5)" : "rgba(100,100,100,0.3)";
+                    ctx.fillRect(bx2, btnY, buildBtnW, 18);
+                    ctx.fillStyle = canBuild ? "#8ad4a4" : "rgba(255,255,255,0.25)";
+                    ctx.font = "9px sans-serif";
+                    ctx.textAlign = "center";
+                    ctx.fillText("建造舰船 $" + cost, bx2 + buildBtnW / 2, btnY + 5);
+                    G._navyBtns.push({ type: 'build', nodeId: node.id, x: bx2, y: btnY, w: buildBtnW, h: 18 });
+                }
             }
         }
 

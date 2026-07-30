@@ -247,7 +247,7 @@ function drawDivisions() {
                 for (let i=1; i<=20; i++) {
                     let t = i/20;
                     let tx = p.startX + (p.endX - p.startX) * t;
-                    let ty = p.startY + (p.endY - p.startY) * t + Math.sin(t*Math.PI) * 0.8;
+                    let ty = p.startY + (p.endY - p.startY) * t + Math.sin(t*Math.PI) * 0.3;
                     let [ptx, pty] = worldToScreen(tx, ty);
                     ctx.lineTo(ptx, pty);
                 }
@@ -287,6 +287,8 @@ function drawDivisions() {
     }
 
     // Check if a unit has focus target (for focus fire visual)
+    // 陆军/海军缩放到大城市级别（zoom>0.35）时显示
+    if (zoom > 0.35) {
     for (let div of G.divisions) {
         let rx = (div.rx!==undefined) ? div.rx : null;
         let ry = (div.ry!==undefined) ? div.ry : null;
@@ -304,8 +306,7 @@ function drawDivisions() {
         let ut = UNIT_TYPES[div.type] || UNIT_TYPES.infantry;
         ctx.save();
 
-        // === Unit background circle ===
-        // Player = green, ally (allied non-at-war) = blue, neutral = light yellow, enemy = red
+        // === Unit background circle (diplomatic) ===
         let bgColor = null;
         let bgRadius = r + 4;
         let isAlly = G.alliances && G.playerCountry && G.alliances[G.playerCountry] && G.alliances[G.playerCountry][div.country];
@@ -333,18 +334,34 @@ function drawDivisions() {
         ctx.shadowBlur = 0;
         if (isSel) { ctx.strokeStyle = "#ffd700"; ctx.lineWidth = 2; ctx.stroke(); }
 
+        // === 工兵紫色拆除圈（仅选中时显示） ===
+        if (div.type === 'engineer' && isPlayer && isSel) {
+            let demolishRange = 0.5;
+            let [rx3, ry3] = worldToScreen(rx + demolishRange, ry);
+            let dPixels = Math.abs(rx3 - sx);
+            ctx.save();
+            ctx.beginPath(); ctx.arc(sx, sy, dPixels, 0, Math.PI*2);
+            ctx.strokeStyle = "rgba(160,80,220,0.4)"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]);
+            ctx.stroke(); ctx.setLineDash([]);
+            ctx.fillStyle = "rgba(160,80,220,0.05)"; ctx.fill();
+            ctx.restore();
+        }
+
         // === Draw emoji with fallback ===
         let emoji = ut.sym;
-        ctx.font = (r*1.5)+"px sans-serif";
+        ctx.save();
+        ctx.font = (r*1.5)+"px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
         ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillStyle = "#fff";
         ctx.fillText(emoji, sx, sy-1);
+        ctx.restore();
 
         // === Patrol shield icon above unit ===
         if (G.patrolTargets[div.id] && G.patrolTargets[div.id].length > 0) {
             ctx.font = "10px sans-serif";
             ctx.textAlign = "center";
             ctx.fillStyle = "rgba(60,200,255,0.9)";
-            ctx.fillText("🛡️", sx, sy - r - 8);
+            ctx.fillText("🛡️", sx, sy - r - (div.formation === 'line' ? 20 : 8));
         }
 
         // Show focus target indicator
@@ -357,10 +374,34 @@ function drawDivisions() {
             ctx.setLineDash([]);
         }
 
+        // Formation indicator chain icon
+        if (div.formation === 'line') {
+            ctx.font = "10px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillStyle = "rgba(60,200,255,0.9)";
+            ctx.fillText("⛓️", sx, sy - r - 8);
+        }
+
         if (div.strength < div.maxStrength) {
             ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(sx - r - 1, sy - r - 5, (r+1)*2, 2);
             ctx.fillStyle = div.strength > 50 ? "#5a8a4a" : "#d47a4a";
             ctx.fillRect(sx - r - 1, sy - r - 5, (r+1)*2 * (div.strength / div.maxStrength), 2);
+        }
+
+        // === Reload cooldown bar (blue) below unit ===
+        if (div.fireCooldown > 0 && div.maxFireCd > 0) {
+            let barW = (r + 1) * 2;
+            let barH = 4;
+            let barY = sy + r + 4;
+            let progress = 1 - (div.fireCooldown / div.maxFireCd);
+            // 暗底
+            ctx.fillStyle = "rgba(0,0,0,0.7)"; ctx.fillRect(sx - r - 1, barY, barW, barH);
+            // 亮蓝色进度
+            ctx.fillStyle = "rgba(40,140,255,0.95)";
+            ctx.fillRect(sx - r - 1, barY, barW * progress, barH);
+            // 边框
+            ctx.strokeStyle = "rgba(100,180,255,0.5)"; ctx.lineWidth = 0.5;
+            ctx.strokeRect(sx - r - 1, barY, barW, barH);
         }
 
         // Hit flash: red overlay when damaged
@@ -372,11 +413,13 @@ function drawDivisions() {
         }
         ctx.restore();
     }
+    } // end zoom check for unit drawing
 
-    // ===== Focus fire visual: red ring on enemy + red dashed lines from shooters =====
+    // ===== Focus fire visual: red ring on enemy + red dashed lines from shooters (仅玩家) =====
     ctx.save();
     let drawnTargets = new Set();
     for (let div of G.divisions) {
+        if (div.country !== G.playerCountry) continue;
         let targetId = div.focusTarget;
         if (!targetId) continue;
         let target = G.divisions.find(d => d.id === targetId);
@@ -410,10 +453,29 @@ function drawDivisions() {
     }
     ctx.restore();
 
-    // ===== Focus factory visual =====
+    // ===== Formation connecting lines =====
+    ctx.save();
+    ctx.strokeStyle = "rgba(60,200,255,0.25)";
+    ctx.lineWidth = 1.5;
+    for (let d of G.divisions) {
+        if (d.formation !== 'line') continue;
+        for (let e of G.divisions) {
+            if (e.formation !== 'line' || d.id >= e.id) continue;
+            let dist = Math.hypot(d.rx - e.rx, d.ry - e.ry);
+            if (dist < 0.5) {
+                let [x1, y1] = worldToScreen(d.rx, d.ry);
+                let [x2, y2] = worldToScreen(e.rx, e.ry);
+                ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+            }
+        }
+    }
+    ctx.restore();
+
+    // ===== Focus factory visual (仅玩家) =====
     ctx.save();
     let drawnFactoryTargets = new Set();
     for (let div of G.divisions) {
+        if (div.country !== G.playerCountry) continue;
         if (!div.focusFactory || !G.factories) continue;
         let fact = G.factories.find(f => f && f.id === div.focusFactory);
         if (!fact || fact.hp <= 0) continue;
@@ -432,6 +494,36 @@ function drawDivisions() {
         // Orange dashed line from shooter to factory
         ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(fx, fy);
         ctx.strokeStyle = "rgba(255,150,0,0.4)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4,6]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    ctx.restore();
+
+    // ===== Focus city visual (仅玩家) =====
+    ctx.save();
+    let drawnCityTargets = new Set();
+    for (let div of G.divisions) {
+        if (div.country !== G.playerCountry) continue;
+        if (!div.focusCity || !G.cities) continue;
+        let city = G.cities[div.focusCity];
+        if (!city || city.hp <= 0) continue;
+        let [sx, sy] = worldToScreen(div.rx, div.ry);
+        let [cx, cy] = worldToScreen(city.lon, city.lat);
+        // Purple ring on city target
+        if (!drawnCityTargets.has(div.focusCity)) {
+            drawnCityTargets.add(div.focusCity);
+            ctx.beginPath(); ctx.arc(cx, cy, 16, 0, Math.PI*2);
+            ctx.strokeStyle = "rgba(200,50,200,0.9)";
+            ctx.lineWidth = 3;
+            ctx.setLineDash([4,4]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        // Purple dashed line from shooter to city
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(cx, cy);
+        ctx.strokeStyle = "rgba(200,50,200,0.4)";
         ctx.lineWidth = 1.5;
         ctx.setLineDash([4,6]);
         ctx.stroke();
@@ -553,6 +645,13 @@ function drawGameTopBar() {
     // === RIGHT SIDE: 日期 + 时间控制 ===
     let rx = canvas.width - 12;
 
+    // === CENTER: FPS 实时显示 ===
+    let fps = window._fps || 0;
+    ctx.fillStyle = fps >= 30 ? "rgba(100,200,100,0.85)" : "rgba(220,80,80,0.85)";
+    ctx.font = "bold 12px monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(fps + " FPS", canvas.width / 2, cy);
+
     // 速度按钮 (从右往左)
     let spd = [1, 2, 4, 8, 16, 32, 64];
     let spdIdx = G.speed || 0;
@@ -627,59 +726,277 @@ function drawGameBottomBar() {
 // ===== 选中省份/城市操作栏 =====
 function drawActionBar() {
     if (!G.playerCountry) return;
-
-    // 城市选中模式
+    // 城市选中模式 — 已移至右侧面板 drawCityPanel()
     if (G.selectedCity) {
-        let city = G.selectedCity;
-        if (city.owner !== G.playerCountry) return;
-        let barY = canvas.height - BOTTOM_BAR_HEIGHT - BOTTOM_TAB_BAR_HEIGHT - TAB_PANEL_HEIGHT - 50;
-        let treasury = G.countries[G.playerCountry] && G.countries[G.playerCountry].treasury;
-        let cityFactories = CITY_FACTORIES[city.id] || 0;
+        drawCityPanel();
+    }
+}
 
-        // 按钮列表
-        let types = [];
-        // 工厂建造按钮（仅首都和较大城市）
-        if (isMajorCity(city.id)) {
-            types.push({id:'build_factory', label:'🏗️建工厂($50)', cost:50, color:'#6a8a4a',
-                desc: '当前' + cityFactories + '座工厂'});
+// ===== 城市详情面板（右侧） =====
+function drawCityPanel() {
+    let city = G.selectedCity;
+    if (!city) return;
+    let isOwn = city.owner === G.playerCountry;
+    let treasury = isOwn && G.countries[G.playerCountry] ? G.countries[G.playerCountry].treasury : 0;
+    let cityFactories = CITY_FACTORIES[city.id] || 0;
+    let manpower = isOwn && G.countries[G.playerCountry] ? G.countries[G.playerCountry].manpower : 0;
+
+    // 城市血量
+    let cityData = G.cities[city.id];
+    let cityHp = cityData ? cityData.hp : 50;
+    let cityMaxHp = cityData ? cityData.maxHp : 50;
+
+    // 检查该城市的建造队列
+    let cityQueue = [];
+    if (isOwn && G.buildQueue) {
+        cityQueue = G.buildQueue.filter(bq => bq.cityId === city.id);
+    }
+
+    let x = canvas.width - 180;
+    let y = TOP_BAR_HEIGHT + 10;
+    let w = 170;
+    let typeCount = isOwn ? (isMajorCity(city.id) ? 5 : 1) : 0;
+    let queueH = cityQueue.length > 0 ? 10 + cityQueue.length * 20 : 0;
+    let upgradeH = (isOwn && !isMajorCity(city.id)) ? 30 : 0;
+    let baseH = isOwn ? 100 + typeCount * 28 + queueH + upgradeH : 110;
+    let h = baseH;
+
+    ctx.save();
+    ctx.fillStyle = "rgba(10,15,26,0.95)";
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+    let accentColor = isOwn ? "#ffd700" : (COUNTRY_COLORS[city.owner] || "#888");
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(x, y, 3, h);
+
+    // 注册点击区域
+    window._cityPanelRect = { x: x, y: y, w: w, h: h };
+
+    // 城市名称 + 归属国
+    ctx.fillStyle = "#ffd700";
+    ctx.font = "bold 12px sans-serif";
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    ctx.fillText("🏰 " + city.name, x + 12, y + 6);
+    ctx.fillStyle = "rgba(255,255,255,0.5)";
+    ctx.font = "10px sans-serif";
+    ctx.fillText(COUNTRY_CN[city.owner] || city.owner, x + 12, y + 22);
+
+    // 城市血量
+    let hpText = "❤️ 血量: " + Math.floor(cityHp) + "/" + Math.floor(cityMaxHp);
+    if (cityHp < cityMaxHp) {
+        let hpRatio = cityHp / cityMaxHp;
+        let hpColor = hpRatio > 0.6 ? "#4a8a2a" : hpRatio > 0.3 ? "#c89820" : "#b83020";
+        ctx.fillStyle = hpColor;
+    } else {
+        ctx.fillStyle = "rgba(255,255,255,0.5)";
+    }
+    ctx.font = "10px sans-serif";
+    ctx.fillText(hpText, x + 12, y + 36);
+    // 血量条
+    let hpBarW = w - 24;
+    let hpBarX = x + 12;
+    let hpBarY = y + 48;
+    ctx.fillStyle = "rgba(0,0,0,0.5)";
+    ctx.fillRect(hpBarX, hpBarY, hpBarW, 4);
+    ctx.fillStyle = cityHp > cityMaxHp * 0.6 ? "#4a8a2a" : cityHp > cityMaxHp * 0.3 ? "#c89820" : "#b83020";
+    ctx.fillRect(hpBarX, hpBarY, hpBarW * Math.max(0, cityHp / cityMaxHp), 4);
+
+    // 工厂数（仅本国显示）
+    if (isOwn) {
+        ctx.fillStyle = "rgba(255,255,255,0.5)";
+        ctx.font = "10px sans-serif";
+        ctx.fillText("🏭 工厂: " + cityFactories, x + 12, y + 56);
+    }
+
+    let ly = isOwn ? y + 76 : y + 60;
+    if (!isOwn) {
+        // 外国城市：显示驻军信息
+        ly += 6;
+        let garrisoned = G.divisions.filter(d => d.garrisonCityId === city.id && d.country === G.playerCountry);
+        if (garrisoned.length > 0) {
+            ctx.fillStyle = "rgba(255,255,255,0.05)";
+            ctx.fillRect(x + 10, ly, w - 20, 1);
+            ly += 6;
+            ctx.fillStyle = "#8ab8d4";
+            ctx.font = "bold 10px sans-serif";
+            ctx.textAlign = "left";
+            ctx.fillText("🛡️ 驻军: " + garrisoned.length + " 单位", x + 12, ly + 2);
+            ly += 20;
         }
-        // 兵种训练
-        types.push({id:'infantry', label:'⚔️步兵($50)', cost:50, color:'#5a8a4a'});
-        types.push({id:'engineer', label:'⚙️工兵($70)', cost:70, color:'#4a7a8a'});
-        types.push({id:'cavalry',  label:'🏇骑兵($80)', cost:80, color:'#8a7a4a'});
-        types.push({id:'artillery',label:'💥炮兵($120)', cost:120, color:'#8a4a5a'});
-
-        let wide = types.length * 105 + 20;
-        let startX = canvas.width / 2 - wide / 2;
-        ctx.save();
-        ctx.fillStyle = "rgba(10,15,26,0.7)";
-        ctx.fillRect(startX - 8, barY - 5, wide + 16, 40);
-
-        // 城市名称
-        ctx.fillStyle = "#ffd700";
-        ctx.font = "bold 11px sans-serif";
-        ctx.textAlign = "left"; ctx.textBaseline = "middle";
-        ctx.fillText("🏰 " + city.name + " (" + (COUNTRY_CN[city.owner]||city.owner) + ")", startX - 4, barY - 10);
-
-        for (let i = 0; i < types.length; i++) {
-            let t = types[i];
-            let can = treasury >= t.cost;
-            let bx = startX + i * 105;
-            ctx.fillStyle = can ? t.color : "rgba(128,128,128,0.3)";
-            ctx.fillRect(bx, barY, 100, 30);
-            ctx.fillStyle = can ? "#fff" : "rgba(255,255,255,0.3)";
-            ctx.font = "11px sans-serif";
-            ctx.textAlign = "center"; ctx.textBaseline = "middle";
-            ctx.fillText(t.label, bx + 50, barY + 10);
-            if (t.desc) {
-                ctx.font = "9px sans-serif";
-                ctx.fillStyle = can ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.2)";
-                ctx.fillText(t.desc, bx + 50, barY + 22);
-            }
+        // 显示敌对关系
+        if (G.playerCountry && areAtWar(G.playerCountry, city.owner)) {
+            ctx.fillStyle = "#d44";
+            ctx.font = "10px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("⚔️ 交战中", x + w/2, ly);
+            ly += 18;
+        } else if (G.playerCountry && isSameFaction(G.playerCountry, city.owner)) {
+            ctx.fillStyle = "rgba(100,200,150,0.8)";
+            ctx.font = "10px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText("🤝 同盟", x + w/2, ly);
+            ly += 18;
         }
         ctx.restore();
         return;
     }
+
+    // === 本国城市：建造队列 & 生产 ===
+    if (!window._cityBtns) window._cityBtns = [];
+    window._cityBtns = [];
+    if (!window._cityPinBtns) window._cityPinBtns = [];
+    window._cityPinBtns = [];
+    // 建造队列
+    if (cityQueue.length > 0) {
+        ctx.fillStyle = "rgba(255,255,255,0.05)";
+        ctx.fillRect(x + 10, ly, w - 20, 1);
+        ly += 4;
+        ctx.fillStyle = "#4a8ad4";
+        ctx.font = "bold 9px sans-serif";
+        ctx.textAlign = "left";
+        ctx.fillText("📋 建造队列:", x + 12, ly + 2);
+        ly += 16;
+        for (let bq of cityQueue) {
+            let progress = bq.totalDays > 0 ? Math.round((1 - bq.days / bq.totalDays) * 100) : 0;
+            let label = bq.type === 'factory' ? '🏗️ 工厂' : (UNIT_TYPES[bq.unitType] ? UNIT_TYPES[bq.unitType].sym + ' ' + UNIT_TYPES[bq.unitType].label : '单位');
+            let remaining = Math.ceil(bq.days);
+            // 置顶按钮（最左侧，仅当非第一项时显示）
+            let isFirst = (cityQueue.indexOf(bq) === 0);
+            let pinX = x + 10;
+            let pinHovered = !isFirst && mouseY !== undefined && mouseY > ly && mouseY < ly + 18 && mouseX > pinX - 2 && mouseX < pinX + 16;
+            let pinColor = pinHovered ? "#ffd700" : "rgba(255,255,255,0.2)";
+            if (!isFirst) {
+                ctx.fillStyle = pinHovered ? "rgba(255,215,0,0.2)" : "rgba(255,255,255,0.05)";
+                ctx.fillRect(pinX - 2, ly, 16, 18);
+                ctx.fillStyle = pinColor;
+                ctx.font = "11px sans-serif";
+                ctx.textAlign = "center";
+                ctx.fillText("▴", pinX + 6, ly + 6);
+                window._cityPinBtns.push({ cityId: city.id, bqIndex: cityQueue.indexOf(bq), x: pinX - 2, y: ly, w: 16, h: 18 });
+            }
+            ctx.fillStyle = "rgba(255,255,255,0.4)";
+            ctx.font = "9px sans-serif";
+            ctx.textAlign = "left";
+            ctx.fillText(label + " " + progress + "% (" + remaining + "天)", x + 28, ly + 2);
+            // 迷你进度条
+            let barW2 = w - 52;
+            ctx.fillStyle = "rgba(255,255,255,0.1)";
+            ctx.fillRect(x + 28, ly + 12, barW2, 3);
+            ctx.fillStyle = "#4a8ad4";
+            ctx.fillRect(x + 28, ly + 12, barW2 * (progress / 100), 3);
+            ly += 20;
+        }
+        ly += 2;
+    }
+    // 分隔线
+    ctx.fillStyle = "rgba(255,255,255,0.08)";
+    ctx.fillRect(x + 10, ly, w - 20, 1);
+    ly += 8;
+
+    // 小城市升级按钮/进度条
+    if (!isMajorCity(city.id)) {
+        // 检查是否有正在进行的升级
+        let upgradeItem = null;
+        if (G.buildQueue) {
+            for (let bq of G.buildQueue) {
+                if (bq.type === 'upgrade_city' && bq.cityId === city.id) {
+                    upgradeItem = bq; break;
+                }
+            }
+        }
+        if (upgradeItem) {
+            // 显示升级进度条
+            let progress = upgradeItem.totalDays > 0 ? Math.max(0, 1 - upgradeItem.days / upgradeItem.totalDays) : 0;
+            let remaining = Math.ceil(upgradeItem.days);
+            ctx.fillStyle = "rgba(180,140,40,0.25)";
+            ctx.fillRect(x + 8, ly, w - 16, 27);
+            ctx.strokeStyle = "rgba(255,215,0,0.3)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 8, ly, w - 16, 27);
+            ctx.fillStyle = "#ffd700";
+            ctx.font = "10px sans-serif";
+            ctx.textAlign = "left"; ctx.textBaseline = "middle";
+            ctx.fillText("⬆️ 升级大城市 " + Math.floor(progress * 100) + "% (" + remaining + "天)", x + 14, ly + 8);
+            // 进度条
+            let barW2 = w - 36;
+            ctx.fillStyle = "rgba(255,255,255,0.1)";
+            ctx.fillRect(x + 14, ly + 18, barW2, 4);
+            ctx.fillStyle = "#ffd700";
+            ctx.fillRect(x + 14, ly + 18, barW2 * progress, 4);
+            ly += 31;
+            // 分隔线
+            ctx.fillStyle = "rgba(255,255,255,0.08)";
+            ctx.fillRect(x + 10, ly, w - 20, 1);
+            ly += 8;
+        } else {
+            let canUpgrade = treasury >= 150;
+            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
+            ctx.fillStyle = hovered && canUpgrade ? "rgba(180,140,40,0.6)" : canUpgrade ? "rgba(180,140,40,0.35)" : "rgba(128,128,128,0.2)";
+            ctx.fillRect(x + 8, ly, w - 16, 22);
+            ctx.strokeStyle = hovered && canUpgrade ? "rgba(255,215,0,0.4)" : "rgba(255,255,255,0.08)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 8, ly, w - 16, 22);
+            ctx.fillStyle = canUpgrade ? "#ffd700" : "rgba(255,255,255,0.3)";
+            ctx.font = "10px sans-serif";
+            ctx.textAlign = "left"; ctx.textBaseline = "middle";
+            ctx.fillText("⬆️ 升级为大城市 ($150)", x + 14, ly + 11);
+            window._cityBtns.push({ id: 'upgrade_city', x: x + 8, y: ly, w: w - 16, h: 22, enabled: canUpgrade });
+            ly += 26;
+            // 分隔线
+            ctx.fillStyle = "rgba(255,255,255,0.08)";
+            ctx.fillRect(x + 10, ly, w - 20, 1);
+            ly += 8;
+        }
+    }
+
+    // 生产选项
+    ctx.fillStyle = "#8ab8d4";
+    ctx.font = "bold 10px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("— 生产 —", x + w/2, ly);
+    ly += 18;
+
+    let types = [];
+    let isOccupied = cityData && cityData.occupierFlag;
+    if (isOccupied) {
+        // 占领城市只能生产步兵
+        types.push({id:'infantry', label:'⚔️ 步兵', cost:50, color:'#5a8a4a', manpower:15});
+    } else if (isMajorCity(city.id)) {
+        types.push({id:'build_factory', label:'🏗️ 建工厂', cost:50, color:'#6a8a4a', desc: '当前' + cityFactories + '座'});
+        types.push({id:'infantry', label:'⚔️ 步兵', cost:50, color:'#5a8a4a', manpower:15});
+        types.push({id:'engineer', label:'⚙️ 工兵', cost:70, color:'#4a7a8a', manpower:12});
+        types.push({id:'cavalry',  label:'🏇 骑兵', cost:80, color:'#8a7a4a', manpower:10});
+        types.push({id:'artillery',label:'💥 炮兵', cost:120, color:'#8a4a5a', manpower:8});
+    } else {
+        // 小城市只能生产步兵
+        types.push({id:'infantry', label:'⚔️ 步兵', cost:50, color:'#5a8a4a', manpower:15});
+    }
+
+    for (let t of types) {
+        let can = treasury >= t.cost && (manpower === undefined || manpower >= (t.manpower || 0));
+        let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
+        ctx.fillStyle = hovered && can ? t.color : can ? t.color + "88" : "rgba(128,128,128,0.2)";
+        ctx.fillRect(x + 8, ly, w - 16, 22);
+        ctx.strokeStyle = hovered && can ? "rgba(255,255,255,0.3)" : "rgba(255,255,255,0.08)";
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 8, ly, w - 16, 22);
+        ctx.fillStyle = can ? "#fff" : "rgba(255,255,255,0.3)";
+        ctx.font = "10px sans-serif";
+        ctx.textAlign = "left"; ctx.textBaseline = "middle";
+        ctx.fillText(t.label + " ($" + t.cost + ")", x + 14, ly + 11);
+        if (t.desc) {
+            ctx.fillStyle = can ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.2)";
+            ctx.font = "8px sans-serif";
+            ctx.textAlign = "right";
+            ctx.fillText(t.desc, x + w - 14, ly + 11);
+        }
+        window._cityBtns.push({ id: t.id, x: x + 8, y: ly, w: w - 16, h: 22, enabled: can });
+        ly += 26;
+    }
+
+    ctx.restore();
 }
 
 // ===== 省份信息面板（增强版） =====
@@ -752,6 +1069,7 @@ function drawGameInfo() {
 
 // ===== 国别侧栏（钢铁雄心风格，更大更多交互） =====
 function drawCountrySidebar() {
+    if (G.selectedCity) return; // 选中城市时跳过国家侧边栏
     let co;
     if (G.diplomacyFocus) {
         co = G.diplomacyFocus;
@@ -762,6 +1080,9 @@ function drawCountrySidebar() {
     if (!co) return;
     let cd = G.countries[co];
     if (!cd) return;
+
+    // Reset flag buttons each frame
+    G._countryFlagBtns = [];
 
     // Helper: get all wars for a country
     function getWars(c) {
@@ -964,13 +1285,33 @@ function drawCountrySidebar() {
         ctx.font = "11px sans-serif";
         ctx.fillStyle = "rgba(100,200,150,0.8)";
         ctx.fillText("🤝 同盟:", x + 16, sy); sy += 14;
-        ctx.font = "10px sans-serif";
-        for (let a of allies) {
-            drawCountryFlag(a, x + 20, sy, 14, 10);
-            ctx.fillStyle = "rgba(255,255,255,0.7)";
-            ctx.fillText(COUNTRY_CN[a] || a, x + 38, sy);
-            sy += 13;
+        // 国旗网格（仅显示国旗，悬停显示名字，点击跳转）
+        let flagW2 = 16, flagH2 = 11, gapX2 = 6, gapY2 = 4;
+        let cols2 = Math.floor((w - 40) / (flagW2 + gapX2));
+        for (let i = 0; i < allies.length; i++) {
+            let a = allies[i];
+            let col = i % cols2, row = Math.floor(i / cols2);
+            let fx = x + 20 + col * (flagW2 + gapX2);
+            let fy = sy + row * (flagH2 + gapY2);
+            let hovered = mouseY !== undefined && mouseY > fy && mouseY < fy + flagH2 && mouseX > fx && mouseX < fx + flagW2;
+            if (hovered) {
+                ctx.fillStyle = "rgba(100,200,150,0.3)";
+                ctx.fillRect(fx - 2, fy - 2, flagW2 + 4, flagH2 + 4);
+                // 悬停显示名字
+                let name = COUNTRY_CN[a] || a;
+                ctx.font = "9px sans-serif";
+                ctx.textAlign = "center";
+                let tw = ctx.measureText(name).width + 6;
+                let tx = fx + flagW2 / 2 - tw / 2;
+                ctx.fillStyle = "rgba(10,15,26,0.9)";
+                ctx.fillRect(tx, fy + flagH2 + 2, tw, 13);
+                ctx.fillStyle = "#e8d8b0";
+                ctx.fillText(name, fx + flagW2 / 2, fy + flagH2 + 4);
+            }
+            drawCountryFlag(a, fx, fy, flagW2, flagH2);
+            G._countryFlagBtns.push({ co: a, x: fx - 2, y: fy - 2, w: flagW2 + 4, h: flagH2 + 4 });
         }
+        sy += Math.ceil(allies.length / cols2) * (flagH2 + gapY2) + 2;
         sy += 2;
     }
 
@@ -981,14 +1322,32 @@ function drawCountrySidebar() {
         ctx.font = "11px sans-serif";
         ctx.fillStyle = "rgba(220,80,80,0.8)";
         ctx.fillText("⚔️ 交战:", x + 16, sy); sy += 14;
-        ctx.font = "10px sans-serif";
-        for (let e of wars) {
-            drawCountryFlag(e, x + 20, sy, 14, 10);
-            ctx.fillStyle = "rgba(255,120,120,0.8)";
-            let ws = getWarScoreDiff(co, e);
-            ctx.fillText((COUNTRY_CN[e] || e) + " [" + (ws > 0 ? "+" : "") + ws.toFixed(0) + "]", x + 38, sy + 1);
-            sy += 13;
+        let flagW2 = 16, flagH2 = 11, gapX2 = 6, gapY2 = 4;
+        let cols2 = Math.floor((w - 40) / (flagW2 + gapX2));
+        for (let i = 0; i < wars.length; i++) {
+            let e = wars[i];
+            let col = i % cols2, row = Math.floor(i / cols2);
+            let fx = x + 20 + col * (flagW2 + gapX2);
+            let fy = sy + row * (flagH2 + gapY2);
+            let hovered = mouseY !== undefined && mouseY > fy && mouseY < fy + flagH2 && mouseX > fx && mouseX < fx + flagW2;
+            if (hovered) {
+                ctx.fillStyle = "rgba(220,80,80,0.3)";
+                ctx.fillRect(fx - 2, fy - 2, flagW2 + 4, flagH2 + 4);
+                let ws = getWarScoreDiff(co, e);
+                let name = (COUNTRY_CN[e] || e) + " [" + (ws > 0 ? "+" : "") + ws.toFixed(0) + "]";
+                ctx.font = "9px sans-serif";
+                ctx.textAlign = "center";
+                let tw = ctx.measureText(name).width + 6;
+                let tx = fx + flagW2 / 2 - tw / 2;
+                ctx.fillStyle = "rgba(10,15,26,0.9)";
+                ctx.fillRect(tx, fy + flagH2 + 2, tw, 13);
+                ctx.fillStyle = "#e8d8b0";
+                ctx.fillText(name, fx + flagW2 / 2, fy + flagH2 + 4);
+            }
+            drawCountryFlag(e, fx, fy, flagW2, flagH2);
+            G._countryFlagBtns.push({ co: e, x: fx - 2, y: fy - 2, w: flagW2 + 4, h: flagH2 + 4 });
         }
+        sy += Math.ceil(wars.length / cols2) * (flagH2 + gapY2) + 2;
         sy += 2;
     }
 
@@ -1468,7 +1827,7 @@ function drawMilitaryPanel(py, ph, startX) {
             ctx.textAlign = "center"; ctx.textBaseline = "middle";
             ctx.fillText("🗑️ 取消巡逻", patrolX + btnW/2, patrolY + 12);
             if (!window._sibBtns) window._sibBtns = [];
-            window._sibBtns.push({id:"patrol_remove", x:patrolX, y:patrolY, w:btnW, h:24, tooltip:"取消选中单位的巡逻"});
+            window._sibBtns.push({id:"patrol_remove", x:patrolX, y:patrolY, w:btnW, h:24, tooltip:"取消选中单位的驻守"});
         } else {
             let hovered = mouseY !== undefined && mouseY > patrolY && mouseY < patrolY + 24 && mouseX > patrolX && mouseX < patrolX + btnW;
             ctx.fillStyle = hovered ? "rgba(100,150,255,0.5)" : "rgba(60,100,200,0.35)";
@@ -1481,7 +1840,7 @@ function drawMilitaryPanel(py, ph, startX) {
             ctx.textAlign = "center"; ctx.textBaseline = "middle";
             ctx.fillText("🛡️ 驻守", patrolX + btnW/2, patrolY + 12);
             if (!window._sibBtns) window._sibBtns = [];
-            window._sibBtns.push({id:"patrol_add", x:patrolX, y:patrolY, w:btnW, h:24, tooltip:"在选中单位当前省份驻守，遇敌出击，清敌后返回"});
+            window._sibBtns.push({id:"patrol_add", x:patrolX, y:patrolY, w:btnW, h:24, tooltip:"选择城市驻守，遇敌出击，远敌退回"});
         }
     }
 
@@ -1558,42 +1917,19 @@ function drawDiplomacyPanel(py, ph, startX) {
     ctx.fillText("外交", startX, py);
     ctx.font = "10px sans-serif";
     ctx.fillStyle = "rgba(255,255,255,0.3)";
-    ctx.fillText("悬停查看详情 ｜ 点击按钮操作", startX, py + 16);
+    ctx.fillText("点击国旗查看详情 ｜ 悬停显示国名", startX, py + 16);
 
-    // Store panel bounds for click interception
-    G._diploPanelBounds = { x: startX, y: py, w: TAB_BTN_W * 3 + 20, h: ph };
+    let panelW = TAB_BTN_W * 3 + 50;
+    G._diploPanelBounds = { x: startX, y: py, w: panelW, h: ph };
 
-    let panelW = TAB_BTN_W * 3 + 20;
-    let colName = startX + 10;
-    let colRelation = startX + 90;
-    let colArmy = startX + 170;
-    let colNavy = startX + 220;
-    let colEcon = startX + 270;
-    let colAction = startX + 330;
+    // 国旗网格布局
+    let flagW = 28, flagH = 19, gapX = 6, gapY = 6;
+    let cols = Math.floor((panelW - 20) / (flagW + gapX));
+    let startFlagX = startX + 10;
+    let dyStart = py + 36;
 
-    // Header row (fixed)
-    let dyStart = py + 32;
-    let dy = dyStart - (_diploScroll || 0);
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(startX, py, panelW, ph);
-    ctx.clip();
-    let _ds = dyStart;
-    ctx.fillStyle = "rgba(255,255,255,0.15)";
-    ctx.fillRect(startX, _ds, panelW, 18);
-    ctx.fillStyle = "rgba(255,255,255,0.5)";
-    ctx.font = "9px sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText("国家", colName, _ds + 4);
-    ctx.fillText("关系", colRelation, _ds + 4);
-    ctx.fillText("陆军", colArmy, _ds + 4);
-    ctx.fillText("海军", colNavy, _ds + 4);
-    ctx.fillText("经济", colEcon, _ds + 4);
-    ctx.fillText("操作", colAction, _ds + 4);
-    dy += 20;
-
-    // Sort countries: allies first, then neutral, then enemies
     let allCountries = Object.keys(COUNTRY_CN).filter(co => co !== G.playerCountry && G.countries[co]);
+    // 排序：同盟在前，然后中立，最后交战
     allCountries.sort((a, b) => {
         let aWar = G.playerCountry && areAtWar(G.playerCountry, a);
         let bWar = G.playerCountry && areAtWar(G.playerCountry, b);
@@ -1603,102 +1939,83 @@ function drawDiplomacyPanel(py, ph, startX) {
         return (bAlly ? 1 : 0) - (aAlly ? 1 : 0);
     });
 
-    for (let co of allCountries) {
-        let cd = G.countries[co];
-        if (!cd) continue;
-        if (dy > py + ph - 10) { ctx.fillStyle = "rgba(255,255,255,0.2)"; ctx.fillText("...", startX, dy); break; }
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(startX, py, panelW, ph);
+    ctx.clip();
+
+    let dy = dyStart - (_diploScroll || 0);
+    let itemH = flagH + gapY;
+
+    for (let i = 0; i < allCountries.length; i++) {
+        let co = allCountries[i];
+        let col = i % cols;
+        let row = Math.floor(i / cols);
+        let fx = startFlagX + col * (flagW + gapX);
+        let fy = dy + row * itemH;
+
+        if (fy + flagH > py + ph - 10) { ctx.fillStyle = "rgba(255,255,255,0.2)"; ctx.fillText("...", startX, dy); break; }
+        if (fy < py) continue; // 在裁剪区域上方
 
         let atWar = G.playerCountry && areAtWar(G.playerCountry, co);
-        let rel = G.relations[co] || 0;
-        let name = COUNTRY_CN[co] || co;
         let isAlly = G.playerCountry && isSameFaction(G.playerCountry, co);
-
-        let rowH = 22;
-        let hovered = mouseY !== undefined && mouseY > dy && mouseY < dy + rowH && mouseX > startX && mouseX < startX + panelW;
         let isFocused = G.diplomacyFocus === co;
+        let hovered = mouseY !== undefined && mouseY > fy && mouseY < fy + flagH && mouseX > fx && mouseX < fx + flagW;
 
-        // Row background
+        // 背景高亮
         if (hovered || isFocused) {
-            ctx.fillStyle = isFocused ? "rgba(255,255,100,0.10)" : "rgba(255,255,255,0.07)";
-            ctx.fillRect(startX, dy, panelW, rowH);
-            G.hoveredDiploBtn = { name, rel, atWar, treasury: Math.floor(cd.treasury), divs: cd.divCount || 0, co, isAlly };
+            ctx.fillStyle = isFocused ? "rgba(255,255,100,0.25)" : "rgba(255,255,255,0.15)";
+            ctx.fillRect(fx - 2, fy - 2, flagW + 4, flagH + 4);
+            // 边框状态色
+            ctx.strokeStyle = atWar ? "rgba(200,80,80,0.7)" : isAlly ? "rgba(80,200,80,0.7)" : "rgba(138,184,212,0.5)";
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(fx - 2, fy - 2, flagW + 4, flagH + 4);
         }
 
-        // Country color bar
-        ctx.fillStyle = COUNTRY_COLORS[co] || "#888";
-        ctx.fillRect(startX, dy + 3, 3, rowH - 6);
+        // 国旗
+        drawCountryFlag(co, fx, fy, flagW, flagH);
 
-        // Country flag (18x12) instead of name
-        drawCountryFlag(co, colName, dy + 3, 18, 12);
-
-        // Store entire row as clickable for focus switch
+        // 点击区域
         if (!G._diploSwitchRows) G._diploSwitchRows = [];
-        G._diploSwitchRows.push({ co, x: startX, y: dy, w: panelW, h: rowH });
+        G._diploSwitchRows.push({ co, x: fx - 2, y: fy - 2, w: flagW + 4, h: flagH + 4 });
 
-        // Hover: show name overlay on flag
+        // 悬停时显示名字
         if (hovered) {
-            ctx.fillStyle = "rgba(255,255,255,0.12)";
-            ctx.fillRect(colName, dy + 2, 22, 16);
-            ctx.fillStyle = "rgba(255,255,255,0.5)";
-            ctx.font = "8px sans-serif";
+            let name = COUNTRY_CN[co] || co;
+            ctx.font = "9px sans-serif";
             ctx.textAlign = "center";
-            ctx.fillText(COUNTRY_CN[co] || co, colName + 11, dy + 14);
+            let tw = ctx.measureText(name).width + 8;
+            let tx = fx + flagW / 2 - tw / 2;
+            let ty = fy + flagH + 2;
+            ctx.fillStyle = "rgba(10,15,26,0.9)";
+            ctx.fillRect(tx, ty, tw, 14);
+            ctx.fillStyle = "#e8d8b0";
+            ctx.fillText(name, fx + flagW / 2, ty + 2);
+
+            // 存储悬停信息用于详情面板
+            let cd = G.countries[co];
+            G.hoveredDiploBtn = {
+                co, name: COUNTRY_CN[co] || co,
+                atWar, isAlly,
+                rel: G.relations[co] || 0,
+                treasury: Math.floor(cd.treasury || 0),
+                divs: cd.divCount || 0,
+                navy: G.ships ? G.ships.filter(s => s.country === co).length : 0
+            };
         }
-
-        // Relation value with color
-        let relColor = rel > 10 ? "rgba(100,200,100,0.7)" : rel < -10 ? "rgba(200,100,100,0.7)" : "rgba(255,255,255,0.4)";
-        ctx.fillStyle = relColor;
-        ctx.fillText((rel > 0 ? "+" : "") + rel, colRelation, dy + 6);
-
-        // Army count
-        let army = cd.divCount || 0;
-        ctx.fillStyle = army > 10 ? "#d4a44a" : "rgba(255,255,255,0.4)";
-        ctx.fillText(army + "", colArmy, dy + 6);
-
-        // Navy count
-        let navy = G.ships ? G.ships.filter(s => s.country === co).length : 0;
-        ctx.fillStyle = navy > 5 ? "#4a8ad4" : "rgba(255,255,255,0.4)";
-        ctx.fillText(navy + "", colNavy, dy + 6);
-
-        // Economy
-        let econ = Math.floor(cd.treasury || 0);
-        ctx.fillStyle = "rgba(255,255,255,0.4)";
-        ctx.fillText("$" + econ, colEcon, dy + 6);
-
-        // Action buttons (visible on hover)
-        if (hovered && G.playerCountry) {
-            if (atWar) {
-                ctx.fillStyle = "rgba(100,200,100,0.25)";
-                ctx.fillRect(colAction, dy + 2, 44, 18);
-                ctx.fillStyle = "#8aca8a";
-                ctx.textAlign = "center";
-                ctx.fillText("求和", colAction + 22, dy + 6);
-            } else {
-                ctx.fillStyle = "rgba(200,80,80,0.25)";
-                ctx.fillRect(colAction, dy + 2, 44, 18);
-                ctx.fillStyle = "#d47a4a";
-                ctx.textAlign = "center";
-                ctx.fillText("宣战", colAction + 22, dy + 6);
-
-                ctx.fillStyle = "rgba(80,150,200,0.25)";
-                ctx.fillRect(colAction + 48, dy + 2, 54, 18);
-                ctx.fillStyle = "#8ab8d4";
-                ctx.textAlign = "center";
-                ctx.fillText("改善", colAction + 75, dy + 6);
-            }
-            // Store button bounds for click handling
-            if (!G._diploBtns) G._diploBtns = [];
-            G._diploBtns.push({ co, x: colAction, y: dy + 2, w: atWar ? 44 : 102, h: 18, atWar });
-        }
-
-        dy += rowH;
     }
 
-    // Tooltip for hover
+    let totalRows = Math.ceil(allCountries.length / cols);
+    let totalContentH = totalRows * itemH;
+    _diploMaxScroll = Math.max(0, totalContentH - (ph - 40));
+    if (_diploScroll > _diploMaxScroll) _diploScroll = _diploMaxScroll;
+    ctx.restore();
+
+    // 详情面板（右侧悬浮）
     if (G.hoveredDiploBtn) {
         let h = G.hoveredDiploBtn;
         let tipX = startX + panelW + 10;
-        let tipY = py + 32;
+        let tipY = py;
         if (tipX > canvas.width - 230) tipX = canvas.width - 230;
         ctx.fillStyle = "rgba(10,15,26,0.95)";
         ctx.fillRect(tipX, tipY, 220, 118);
@@ -1716,20 +2033,16 @@ function drawDiplomacyPanel(py, ph, startX) {
         ctx.fillStyle = "rgba(255,255,255,0.5)";
         ctx.fillText("关系值: " + h.rel, tipX + 8, tipY + 40);
         ctx.fillText("国库: " + h.treasury, tipX + 8, tipY + 54);
-        ctx.fillText("师团数: " + h.divs, tipX + 8, tipY + 68);
-        let gs = getGuarantors(h.co);
+        ctx.fillText("师团: " + h.divs, tipX + 8, tipY + 68);
+        ctx.fillText("舰船: " + (h.navy || 0), tipX + 8, tipY + 82);
+        let gs = getGuarantors ? getGuarantors(h.co) : [];
         if (gs.length > 0) {
             ctx.fillStyle = "rgba(100,200,255,0.6)";
-            ctx.fillText("🛡️ 受" + gs.map(g => COUNTRY_CN[g]||g).join(",") + "保障", tipX + 8, tipY + 82);
-        }
-        if (h.atWar) {
-            ctx.fillStyle = "rgba(200,100,100,0.6)";
-            ctx.fillText("右键点击其军队可进攻", tipX + 8, tipY + (gs.length > 0 ? 98 : 84));
+            ctx.fillText("🛡️ 受" + gs.map(g => COUNTRY_CN[g]||g).join(",") + "保障", tipX + 8, tipY + 96);
         }
     }
 
-    // Scroll buttons
-    _diploMaxScroll = Math.max(0, dy - (py + ph) + 10);
+    // 滚动按钮
     if (_diploMaxScroll > 0) {
         if (_diploScroll > 0) {
             let btnX = startX + panelW - 22;
@@ -1885,19 +2198,28 @@ function drawSelectedUnitSidebar() {
     let selDivs = G.selectedDivisions.map(id => G.divisions.find(d => d.id === id)).filter(d => d);
     if (selDivs.length === 0) return;
 
+    // Count navy divisions
+    let navySel = selDivs.filter(d => d.type === 'navy');
+    let hasNavyFormation = navySel.length > 1;
+
     let x = canvas.width - 180;
     let y = TOP_BAR_HEIGHT + 10;
     let w = 170;
-    let h = Math.min(selDivs.length, 10) * 24 + 60;
+    let extraH = hasNavyFormation ? 90 : 0;
+    let h = Math.min(selDivs.length, 10) * 24 + 60 + extraH;
 
     ctx.save();
-    ctx.fillStyle = "rgba(10,15,26,0.88)";
+    ctx.fillStyle = "rgba(10,15,26,0.95)";
     ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = "rgba(255,255,255,0.08)";
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
     ctx.lineWidth = 1;
     ctx.strokeRect(x, y, w, h);
     ctx.fillStyle = COUNTRY_COLORS[G.playerCountry] || "#888";
     ctx.fillRect(x, y, 3, h);
+
+    // 注册详情栏点击区域，防止穿透到背景
+    if (!window._sidePanelRect) window._sidePanelRect = {};
+    window._sidePanelRect = { x: x, y: y, w: w, h: h };
 
     ctx.fillStyle = "#e8d8b0";
     ctx.font = "bold 11px sans-serif";
@@ -1920,11 +2242,72 @@ function drawSelectedUnitSidebar() {
         if (shipInfo) {
             txt = ut.sym + " " + d.name + "[" + shipInfo.gradeName + "]" + shield;
         } else {
-            txt = ut.sym + " " + (d.name.split(' ').pop() || d.id) + " [" + Math.floor(d.strength) + "]" + shield;
+            txt = ut.sym + " " + d.name + " [" + Math.floor(d.strength) + "]" + shield;
         }
         if (d.focusTarget) txt += " ⚡";
+        // Clickable remove from formation indicator
+        if (d.formation === 'line') txt += " ⛓️";
         ctx.fillText(txt, x + 12, ly);
+        // Invisible hit area for formation removal
+        if (d.formation === 'line') {
+            if (!window._sibFormBtn) window._sibFormBtn = [];
+            window._sibFormBtn.push({divId:d.id, x:x+8, y:ly-4, w:w-16, h:18});
+        }
         ly += 22;
+    }
+
+    // Formation buttons (when multiple navy selected)
+    if (hasNavyFormation) {
+        ly += 4;
+        ctx.fillStyle = "rgba(255,255,255,0.05)";
+        ctx.fillRect(x + 10, ly, w - 20, 1);
+        ly += 10;
+
+        ctx.fillStyle = "#8ab8d4";
+        ctx.font = "bold 10px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("⚓ 海军阵型", x + w/2, ly);
+        ly += 20;
+
+        // Check if all selected navy have 'line' formation already
+        let allLine = navySel.every(d => d.formation === 'line');
+
+        if (allLine) {
+            // Cancel formation button
+            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
+            ctx.fillStyle = hovered ? "rgba(255,80,80,0.5)" : "rgba(255,80,80,0.25)";
+            ctx.fillRect(x + 8, ly, w - 16, 22);
+            ctx.strokeStyle = "rgba(255,80,80,0.4)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 8, ly, w - 16, 22);
+            ctx.fillStyle = "#d47a4a";
+            ctx.font = "bold 10px sans-serif";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillText("✖ 解除阵型", x + w/2, ly + 11);
+            if (!window._sibBtns) window._sibBtns = [];
+            window._sibBtns.push({id:"formation_remove", x:x+8, y:ly, w:w-16, h:22, tooltip:"解除所有选中海军的一字阵"});
+        } else {
+            // Line formation button
+            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
+            ctx.fillStyle = hovered ? "rgba(60,200,255,0.5)" : "rgba(60,200,255,0.25)";
+            ctx.fillRect(x + 8, ly, w - 16, 22);
+            ctx.strokeStyle = "rgba(60,200,255,0.4)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 8, ly, w - 16, 22);
+            ctx.fillStyle = "#8ab8d4";
+            ctx.font = "bold 10px sans-serif";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillText("— 一字阵", x + w/2, ly + 11);
+            if (!window._sibBtns) window._sibBtns = [];
+            window._sibBtns.push({id:"formation_apply", x:x+8, y:ly, w:w-16, h:22, tooltip:"将选中海军排列成一字阵（垂直于前进方向）"});
+        }
+        ly += 26;
+
+        // Formation status info
+        ctx.fillStyle = "rgba(255,255,255,0.4)";
+        ctx.font = "9px sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("点击单位后可移除阵型", x + w/2, ly);
     }
 
     // Patrol + Frontline buttons (always visible when units are selected)
@@ -1945,7 +2328,7 @@ function drawSelectedUnitSidebar() {
         ctx.textAlign = "center"; ctx.textBaseline = "middle";
         ctx.fillText("🗑️ 取消巡逻", x + w/2, btnY + 11);
         if (!window._sibBtns) window._sibBtns = [];
-        window._sibBtns.push({id:"patrol_remove", x:x+8, y:btnY, w:w-16, h:22, tooltip:"取消选中单位的巡逻"});
+        window._sibBtns.push({id:"patrol_remove", x:x+8, y:btnY, w:w-16, h:22, tooltip:"取消选中单位的驻守"});
     } else {
         // Two buttons: Patrol (left) + Frontline (right)
         let btnW2 = (w - 20) / 2;
@@ -1974,9 +2357,11 @@ function drawSelectedUnitSidebar() {
             ctx.fillStyle = "#d4c84a";
             ctx.font = "bold 9px sans-serif";
             ctx.textAlign = "center"; ctx.textBaseline = "middle";
-            ctx.fillText(G.frontlineDrawing ? "✅ 部署" : "⚔️ 前线", flBtnX + btnW2/2, btnY + 11);
+            let hasActiveFrontlines = G.frontlineGroups && G.frontlineGroups.length > 0;
+            let flBtnText = G.frontlineDrawing ? "✅ 绘制中" : (hasActiveFrontlines ? "⏏️ 取消" : "⚔️ 前线");
+            ctx.fillText(flBtnText, flBtnX + btnW2/2, btnY + 11);
             if (!window._sibBtns) window._sibBtns = [];
-            let tip = G.frontlineDrawing ? "再次点击部署到已标记目标" : "选中部队后点击，然后点击敌国边境省份标记进攻目标";
+            let tip = G.frontlineDrawing ? "再次点击取消绘制" : (hasActiveFrontlines ? "再次点击取消所有前线" : "选中部队后点击，然后在敌国边境画指挥线");
             window._sibBtns.push({id:"frontline", x:flBtnX, y:btnY, w:btnW2, h:22, tooltip: tip});
         }
     }
@@ -2010,6 +2395,7 @@ function handleTabClick(mx, my) {
         let bx = startX + i * (TAB_BTN_W + 10);
         if (my > tabBtnY && my < tabBtnY + TAB_BTN_H && mx > bx && mx < bx + TAB_BTN_W) {
             G.activeTab = (G.activeTab === tabs[i]) ? null : tabs[i];
+            if (G.activeTab === null) G.selectedNavyNode = null;
             return true;
         }
     }
@@ -2020,6 +2406,7 @@ function handleTabClick(mx, my) {
         if (mx > cb.x && mx < cb.x + cb.w && my > cb.y && my < cb.y + cb.h) {
             G.activeTab = null;
             _showNavyGuide = false;
+            G.selectedNavyNode = null;
             return true;
         }
     }
@@ -2047,30 +2434,10 @@ function handleTabClick(mx, my) {
                     if (!cData || cData.treasury < 500 || cData.manpower < 5) return true;
                     cData.treasury -= 500;
                     cData.manpower -= 5;
-                    let ship = createShip(btn.nodeId, G.playerCountry);
-                    if (ship) {
-                        let seaPos = findSeaPosition(node.lon, node.lat);
-                        let bestProv = findNearestProvince(node.lon, node.lat);
-                        if (bestProv) {
-                            let divName = '(' + (COUNTRY_CN[G.playerCountry] || G.playerCountry) + ')' + ship.name;
-                            G.divisions.push({
-                                id: G.divIdCounter++, name: divName,
-                                type: 'navy', province: bestProv, country: G.playerCountry,
-                                strength: 100, maxStrength: 100,
-                                rx: seaPos[0], ry: seaPos[1],
-                                state: 'idle', targetX: null, targetY: null,
-                                attackTarget: null, focusTarget: null, focusFactory: null,
-                                fireCooldown: 0, exp: 0,
-                                shipId: ship.id,
-                            });
-                            let pd = G.provinceData[bestProv];
-                            if (pd) pd.garrison = (pd.garrison || 0) + 1;
-                            cData.divCount = (cData.divCount || 0) + 1;
-                        }
-                        let gradeName = SHIP_GRADES[ship.grade] ? SHIP_GRADES[ship.grade].name : '';
-                        let suffix = ship.isLegendary ? ('[' + gradeName + ']') : '';
-                        addGameLog("在" + (node.name || "海军节点") + "建造了(" + (COUNTRY_CN[G.playerCountry] || G.playerCountry) + ")" + ship.name + suffix);
-                    }
+                    // 加入海军建造队列（30天）
+                    if (!G.navyBuildQueue) G.navyBuildQueue = [];
+                    G.navyBuildQueue.push({ type: 'navy', nodeId: btn.nodeId, days: 30, totalDays: 30 });
+                    addGameLog("在" + (node.name || "海军节点") + "开始建造舰船 (30天)");
                     return true;
                 }
                 if (btn.type === 'upgrade') {
@@ -2138,7 +2505,6 @@ function handleTabClick(mx, my) {
             }
         }
     }
-}
     if (G.activeTab === 'diplomacy' && G._diploSwitchRows) {
         for (let row of G._diploSwitchRows) {
             if (mx > row.x && mx < row.x + row.w && my > row.y && my < row.y + row.h) {
@@ -2228,4 +2594,5 @@ function handleTabClick(mx, my) {
     }
 
     return false;
+}
 }
