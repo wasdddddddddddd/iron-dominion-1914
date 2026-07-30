@@ -831,10 +831,18 @@ function fireUnits(days) {
         }
 
         // Nothing at all to engage — clear focus
-        if(!lockTarget && !fireTarget && !d.focusCity && !d.focusFactory){d.focusTarget=null;continue;}
+        if(!lockTarget && !fireTarget && !d.focusCity && !d.focusFactory){d.focusTarget=null;d._chaseDays=0;continue;}
         // If we have a lock but no fire target: move toward target to get in range
         // (Only for AI units, or player units with an explicit right-click focus target)
         if(!fireTarget) {
+            // 追踪超时：4天打不到就放弃
+            if (d.focusTarget || d.focusCity || d.focusFactory) {
+                d._chaseDays = (d._chaseDays || 0) + days;
+                if (d._chaseDays > 4) {
+                    d.focusTarget = null; d.focusCity = null; d.focusFactory = null; d._chaseDays = 0;
+                    continue;
+                }
+            }
             let shouldMove = d.country !== G.playerCountry;
             if (!shouldMove && d.focusTarget) {
                 let ft = G.divisions.find(x=>x.id===d.focusTarget);
@@ -878,6 +886,7 @@ function fireUnits(days) {
         }
 
         d.fireCooldown=vFireCd; d.maxFireCd=vFireCd;
+        d._chaseDays = 0;
         if (G.patrolTargets[d.id] && d.patrolChase > 0) d.patrolFired = true;
 
         let targetX=fireTarget.rx;
@@ -888,6 +897,10 @@ function fireUnits(days) {
         let travelDist=Math.hypot(dx,dy);
         let isArtillery=d.type==='artillery';
         let arcHeight=isArtillery ? 0.3 : 0;
+        // 近距目标压低弧线，防止弹道从头顶越过
+        if (isArtillery && travelDist < vRange * 0.5) {
+            arcHeight *= (travelDist / (vRange * 0.5));
+        }
         // Bullet flies full range distance in target direction
         let bulletLife = vRange / bulletSpeed;
         let endX = targetX, endY = targetY;
@@ -1340,8 +1353,12 @@ function updateFrontlineAdvance(days) {
             }
             if (bestEnemy) {
                 d.state = 'moving';
-                d.targetX = bestEnemy.rx;
-                d.targetY = bestEnemy.ry;
+                let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
+                let desiredDist = ut.range * 0.85;
+                let dx = bestEnemy.rx - d.rx, dy = bestEnemy.ry - d.ry;
+                let dist = Math.hypot(dx, dy);
+                d.targetX = d.rx + (dx/dist) * (dist - desiredDist);
+                d.targetY = d.ry + (dy/dist) * (dist - desiredDist);
                 d.focusTarget = bestEnemy.id;
                 continue;
             }
@@ -1576,9 +1593,14 @@ function updateAI() {
         }
         if (bestDist > 10 && Math.random() < 0.04) {
             d.state = "moving";
-            let tx = target.rx; let ty = target.ry;
+            let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
+            let desiredDist = ut.range * 0.9;
+            let dx = target.rx - d.rx, dy = target.ry - d.ry;
+            let dist = Math.hypot(dx, dy);
+            let tx = d.rx + (dx/dist) * (dist - desiredDist);
+            let ty = d.ry + (dy/dist) * (dist - desiredDist);
             if (d.type === 'navy' && typeof isLandPoint === 'function' && isLandPoint(tx, ty)) continue;
-            d.targetX = target.rx; d.targetY = target.ry;
+            d.targetX = tx; d.targetY = ty;
         }
     }
 }// AI functions moved to js/ai/ai_controller.js
