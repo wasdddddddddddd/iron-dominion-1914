@@ -438,6 +438,107 @@ body::before {
 }
 .mp-btn-join:hover { border-color: rgba(140,180,120,0.6) !important; box-shadow: 0 0 14px rgba(100,140,90,0.1) !important; }
 
+/* 本机IP显示 */
+.mp-ip-info {
+  margin: 12px 0 !important;
+  padding: 12px 14px !important;
+  background: rgba(20,14,8,0.5) !important;
+  border: 1px solid rgba(180,140,80,0.12) !important;
+  border-radius: var(--radius-sm) !important;
+}
+.mp-ip-list {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  gap: 6px !important;
+  align-items: center !important;
+}
+.mp-ip-addr {
+  display: inline-block !important;
+  padding: 4px 10px !important;
+  background: rgba(40,30,18,0.6) !important;
+  border: 1px solid rgba(200,168,48,0.2) !important;
+  border-radius: 3px !important;
+  color: #d4b060 !important;
+  font-family: 'Courier New', monospace !important;
+  font-size: 12px !important;
+  cursor: pointer !important;
+  transition: all var(--ease-brass) !important;
+}
+.mp-ip-addr:hover {
+  border-color: rgba(200,168,48,0.5) !important;
+  background: rgba(60,45,25,0.7) !important;
+  box-shadow: 0 0 8px rgba(200,168,48,0.1) !important;
+}
+.mp-ip-hint {
+  font-size: 10px !important;
+  color: var(--text-dim) !important;
+  font-family: var(--font-display) !important;
+}
+
+/* 房间大厅服务器地址 */
+.mp-lobby-addr {
+  display: block !important;
+  font-size: 10px !important;
+  color: rgba(200,180,150,0.4) !important;
+  font-family: 'Courier New', monospace !important;
+  margin-top: 4px !important;
+  letter-spacing: 0 !important;
+}
+
+/* 通过房间号加入 */
+.mp-join-by-code {
+  margin: 12px 0 !important;
+  padding: 14px !important;
+  background: rgba(20,14,8,0.5) !important;
+  border: 1px solid rgba(180,140,80,0.12) !important;
+  border-radius: var(--radius-sm) !important;
+}
+.mp-section-label {
+  color: var(--text-muted) !important;
+  font-family: var(--font-display) !important;
+  font-size: 11px !important;
+  letter-spacing: 2px !important;
+  margin-bottom: 10px !important;
+}
+.mp-join-code-row {
+  display: flex !important;
+  gap: 8px !important;
+}
+.mp-join-code-row input {
+  flex: 1 !important;
+  background: rgba(30,20,10,0.7) !important;
+  border: 1px solid rgba(180,140,80,0.2) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-body) !important;
+  padding: 8px 12px !important;
+  transition: all var(--ease-brass) !important;
+}
+.mp-join-code-row input:focus {
+  border-color: rgba(200,168,48,0.5) !important;
+  outline: none;
+  box-shadow: 0 0 12px rgba(200,168,48,0.1), inset 0 1px 3px rgba(0,0,0,0.3) !important;
+  background: rgba(40,28,14,0.8) !important;
+}
+.mp-btn-join-code {
+  background: linear-gradient(180deg, rgba(35,50,35,0.6) 0%, rgba(20,30,20,0.7) 100%) !important;
+  border: 1px solid rgba(100,140,90,0.4) !important;
+  color: #90b080 !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-display) !important;
+  font-size: 13px !important;
+  letter-spacing: 1px !important;
+  padding: 8px 18px !important;
+  cursor: pointer;
+  transition: all var(--ease-brass) !important;
+  white-space: nowrap;
+}
+.mp-btn-join-code:hover {
+  border-color: rgba(140,180,120,0.6) !important;
+  box-shadow: 0 0 14px rgba(100,140,90,0.1) !important;
+  background: linear-gradient(180deg, rgba(50,70,50,0.7) 0%, rgba(30,45,30,0.8) 100%) !important;
+}
+
 .mp-btn-danger {
   background: linear-gradient(180deg, rgba(50,20,20,0.6) 0%, rgba(30,12,12,0.7) 100%) !important;
   border-color: rgba(160,60,60,0.4) !important;

@@ -173,6 +173,9 @@ window.MP = (function() {
         html += '<div class="mp-lobby-header">';
         html += `<span class="mp-lobby-title">${esc(roomData.name)}</span>`;
         html += `<span class="mp-lobby-code">房间号: ${roomData.id}</span>`;
+        if (isHost) {
+            html += `<span class="mp-lobby-addr">服务器地址: ${esc(serverUrl)}</span>`;
+        }
         html += '</div>';
 
         html += '<div class="mp-seats">';
@@ -366,6 +369,7 @@ window.MP = (function() {
         const panel = getOrCreateEl('mpConnectPanel');
         panel.style.display = 'flex';
         renderConnectionPanel();
+        detectLocalIPs();
         // 请求房间列表
         if (connected) send(M.ROOM_LIST);
         // 隐藏单机选择界面
@@ -387,11 +391,26 @@ window.MP = (function() {
         html += `<div class="mp-status ${connected ? 'mp-status-ok' : 'mp-status-err'}">${connected ? '● 已连接至指挥部' : '○ 未连接'}</div>`;
         html += '</div>';
 
+        // 本机IP显示（方便房主分享）
+        html += '<div class="mp-ip-info">';
+        html += '<div class="mp-section-label">本机地址（分享给其他玩家）</div>';
+        html += '<div class="mp-ip-list" id="mpIpList">正在检测...</div>';
+        html += '</div>';
+
         html += '<div class="mp-connect-form">';
         html += `<input id="mpServerUrl" value="${esc(serverUrl)}" placeholder="服务器地址">`;
         html += `<input id="mpPlayerName" placeholder="你的昵称" maxlength="12">`;
         html += '<div class="mp-connect-btns">';
         html += `<button class="mp-btn mp-btn-connect" onclick="MP.doConnect()">${connected ? '重新连接' : '连接服务器'}</button>`;
+        html += '</div>';
+        html += '</div>';
+
+        // 输入房间号加入
+        html += '<div class="mp-join-by-code">';
+        html += '<div class="mp-section-label">通过房间号加入</div>';
+        html += '<div class="mp-join-code-row">';
+        html += '<input id="mpRoomCode" placeholder="输入房间号" maxlength="8">';
+        html += '<button class="mp-btn mp-btn-join-code" onclick="MP.doJoinByCode()">加入</button>';
         html += '</div>';
         html += '</div>';
 
@@ -443,6 +462,41 @@ window.MP = (function() {
         });
     }
 
+    // 检测本机IP地址（WebRTC方式）
+    function detectLocalIPs() {
+        const el = document.getElementById('mpIpList');
+        if (!el) return;
+        const ips = new Set();
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+        pc.createDataChannel('');
+        pc.createOffer().then(offer => pc.setLocalDescription(offer));
+        pc.onicecandidate = (e) => {
+            if (!e.candidate) {
+                pc.close();
+                renderIPs();
+                return;
+            }
+            const addr = e.candidate.address;
+            if (addr && !addr.includes(':') && addr !== '0.0.0.0') {
+                ips.add(addr);
+            }
+        };
+        // 超时
+        setTimeout(() => { pc.close(); renderIPs(); }, 3000);
+        function renderIPs() {
+            if (ips.size === 0) {
+                el.innerHTML = '<span class="mp-ip-addr">无法检测，请查看系统网络设置</span>';
+            } else {
+                let html = '';
+                for (let ip of ips) {
+                    html += `<span class="mp-ip-addr" onclick="navigator.clipboard.writeText('${ip}').then(()=>MP.showToast('已复制: ${ip}'))">${ip}</span>`;
+                }
+                html += '<span class="mp-ip-hint">（点击复制）</span>';
+                el.innerHTML = html;
+            }
+        }
+    }
+
     function doCreateRoom() {
         if (!connected) return showToast('请先连接服务器');
         const name = document.getElementById('mpRoomName')?.value || '';
@@ -462,6 +516,19 @@ window.MP = (function() {
             password = prompt('请输入房间密码:') || '';
         }
         joinRoom(roomId, password, playerName);
+    }
+
+    function doJoinByCode() {
+        if (!connected) return showToast('请先连接服务器');
+        const code = document.getElementById('mpRoomCode')?.value || '';
+        if (!code.trim()) return showToast('请输入房间号');
+        const playerName = document.getElementById('mpPlayerName')?.value || '';
+        const room = (typeof roomListCache !== 'undefined' && roomListCache) ? roomListCache.find(r => r.id === code.trim()) : null;
+        let password = '';
+        if (room && room.hasPassword) {
+            password = prompt('请输入房间密码:') || '';
+        }
+        joinRoom(code.trim(), password, playerName);
     }
 
     function goBack() {
@@ -989,7 +1056,7 @@ window.MP = (function() {
         showRoomLobby, hideRoomLobby,
         createRoom, joinRoom, leaveRoom,
         selectCountry, addAI: showAddAI, removeAI, setReady, startGame,
-        sendChat, doConnect, doCreateRoom, doJoinRoom, goBack,
+        sendChat, doConnect, doCreateRoom, doJoinRoom, doJoinByCode, goBack,
         sendAction, sendSpeed,
         serializeState, serializeDelta, sendFullSync, sendDeltaSync,
         applyFullState, applyDelta, onFrame,
