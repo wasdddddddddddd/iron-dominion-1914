@@ -40,25 +40,41 @@ window.MP = (function() {
     };
 
     // ─── 连接管理 ─────────────────────────────────
+    let wsEpoch = 0;
     function connect(url) {
         if (url) serverUrl = url;
-        if (ws) { ws.close(); ws = null; }
+        const epoch = ++wsEpoch;
+        if (ws) {
+            // 解除旧连接的处理器，防止其 onclose 干扰新连接状态
+            ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null;
+            try { ws.close(); } catch(e) {}
+            ws = null;
+        }
         return new Promise((resolve, reject) => {
             ws = new WebSocket(serverUrl);
             ws.onopen = () => {
+                if (epoch !== wsEpoch) return;
                 connected = true;
                 pingLoop();
                 resolve();
             };
-            ws.onerror = () => reject(new Error('连接失败'));
+            ws.onerror = () => {
+                if (epoch !== wsEpoch) return;
+                reject(new Error('连接失败'));
+            };
             ws.onmessage = e => {
                 try { onMessage(JSON.parse(e.data)); }
                 catch(ex) { console.warn('[MP] 消息解析失败:', ex); }
             };
             ws.onclose = () => {
+                if (epoch !== wsEpoch) return;
                 connected = false;
+                if (pingTimer) { clearInterval(pingTimer); pingTimer = null; }
                 if (mode === 'host') addGameLog('与服务器断开连接');
                 mode = null; roomId = null; roomData = null;
+                // 刷新面板，避免显示与真实状态不一致
+                const panel = document.getElementById('mpConnectPanel');
+                if (panel && panel.style.display !== 'none') renderConnectionPanel();
             };
         });
     }
@@ -243,7 +259,7 @@ window.MP = (function() {
         html += `<div class="mp-seat-num">#${idx + 1}</div>`;
         html += `<div class="mp-seat-tag">空位</div>`;
         if (isHost) {
-            html += `<button class="mp-btn-sm" onclick="MP.showAddAI(${idx})">+ 添加AI</button>`;
+            html += `<button class="mp-btn-sm" onclick="MP.addAI(${idx})">+ 添加AI</button>`;
         } else {
             html += '<div class="mp-seat-wait">等待玩家...</div>';
         }
@@ -497,8 +513,10 @@ window.MP = (function() {
         }
     }
 
+    function isOpen() { return !!ws && ws.readyState === WebSocket.OPEN; }
+
     function doCreateRoom() {
-        if (!connected) return showToast('请先连接服务器');
+        if (!isOpen()) return showToast('请先连接服务器');
         const name = document.getElementById('mpRoomName')?.value || '';
         const password = document.getElementById('mpRoomPassword')?.value || '';
         const maxPlayers = parseInt(document.getElementById('mpMaxPlayers')?.value || '4');
@@ -508,7 +526,7 @@ window.MP = (function() {
     }
 
     function doJoinRoom(roomId) {
-        if (!connected) return showToast('请先连接服务器');
+        if (!isOpen()) return showToast('请先连接服务器');
         const playerName = document.getElementById('mpPlayerName')?.value || '';
         const room = (typeof roomListCache !== 'undefined' && roomListCache) ? roomListCache.find(r => r.id === roomId) : null;
         let password = '';
@@ -519,7 +537,7 @@ window.MP = (function() {
     }
 
     function doJoinByCode() {
-        if (!connected) return showToast('请先连接服务器');
+        if (!isOpen()) return showToast('请先连接服务器');
         const code = document.getElementById('mpRoomCode')?.value || '';
         if (!code.trim()) return showToast('请输入房间号');
         const playerName = document.getElementById('mpPlayerName')?.value || '';
