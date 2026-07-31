@@ -686,7 +686,7 @@ window.MP = (function() {
 
     function serializeDelta() {
         // 增量：只发送单位位置变化
-        const delta = { tick: G.tick, units: [] };
+        const delta = { tick: G.tick, date: G.date ? G.date.getTime() : Date.now(), units: [] };
         for (let d of G.divisions) {
             delta.units.push({
                 id: d.id, rx: d.rx, ry: d.ry, state: d.state,
@@ -717,11 +717,16 @@ window.MP = (function() {
     }
 
     // ─── 状态应用 (Client) ─────────────────────────────────
+    // 客户端时间/插值基准
+    let lastDeltaDate = null;
+    let lastDeltaWallTime = 0;
+
     function applyFullState(state) {
         if (!state || mode !== 'client') return;
 
         // 日期
         if (state.date && G.date) G.date.setTime(state.date);
+        if (state.date != null) { lastDeltaDate = state.date; lastDeltaWallTime = Date.now(); }
         if (state.tick !== undefined) G.tick = state.tick;
         if (state.speed !== undefined) G.speed = state.speed;
         if (state.paused !== undefined) G.paused = state.paused;
@@ -770,12 +775,18 @@ window.MP = (function() {
             const oldMap = {};
             for (let d of G.divisions) oldMap[d.id] = d;
             G.divisions = [];
+            const now = Date.now();
             for (let sd of state.divisions) {
                 const old = oldMap[sd.id];
                 G.divisions.push({
                     ...sd,
                     // 保留客户端特有的渲染属性
                     hitFlash: old ? old.hitFlash : 0,
+                    // 插值基准：从旧显示位置平滑过渡到新位置
+                    _px: old ? old.rx : sd.rx,
+                    _py: old ? old.ry : sd.ry,
+                    _rx: sd.rx, _ry: sd.ry,
+                    _t0: now,
                 });
             }
         }
@@ -801,15 +812,20 @@ window.MP = (function() {
     function applyDelta(delta) {
         if (!delta || mode !== 'client') return;
         if (delta.tick !== undefined) G.tick = delta.tick;
+        if (delta.date != null) { lastDeltaDate = delta.date; lastDeltaWallTime = Date.now(); }
 
         if (delta.units) {
             const unitMap = {};
             for (let d of G.divisions) unitMap[d.id] = d;
+            const now = Date.now();
 
             for (let ud of delta.units) {
                 const d = unitMap[ud.id];
                 if (d) {
-                    d.rx = ud.rx; d.ry = ud.ry;
+                    // 位置作为插值目标，不直接覆盖显示坐标（避免5Hz瞬移卡顿）
+                    d._px = d.rx; d._py = d.ry;
+                    d._rx = ud.rx; d._ry = ud.ry;
+                    d._t0 = now;
                     d.state = ud.state;
                     d.targetX = ud.targetX; d.targetY = ud.targetY;
                     d.strength = ud.strength;
@@ -821,6 +837,27 @@ window.MP = (function() {
                     if (ud.hitFlash !== undefined) d.hitFlash = ud.hitFlash;
                 }
             }
+        }
+    }
+
+    // ─── 客户端每帧：插值单位位置 + 外推日期 (Client) ─────────────────
+    function onClientFrame() {
+        if (mode !== 'client' || !G || !G.divisions) return;
+        const now = Date.now();
+
+        // 单位位置插值（200ms 快照窗口）
+        for (let d of G.divisions) {
+            if (d._rx === undefined || d._ry === undefined) continue;
+            const t = Math.min(1, (now - (d._t0 || now)) / 200);
+            d.rx = d._px + (d._rx - d._px) * t;
+            d.ry = d._py + (d._ry - d._py) * t;
+        }
+
+        // 日期外推（基于最近一次增量同步，平滑推进）
+        if (lastDeltaDate != null && G.date && !G.paused) {
+            const speed = G.speed || 4;
+            const msPerDay = 12000 / speed;
+            G.date.setTime(lastDeltaDate + (now - lastDeltaWallTime) / msPerDay * 86400000);
         }
     }
 
@@ -1072,12 +1109,11 @@ window.MP = (function() {
         connect, disconnect, send,
         showConnectionPanel, hideConnectionPanel,
         showRoomLobby, hideRoomLobby,
-        createRoom, joinRoom, leaveRoom,
-        selectCountry, addAI: showAddAI, removeAI, setReady, startGame,
+        createRoom, joinRoom, leaveRoom,        selectCountry, addAI: showAddAI, removeAI, setReady, startGame,
         sendChat, doConnect, doCreateRoom, doJoinRoom, doJoinByCode, goBack,
         sendAction, sendSpeed,
         serializeState, serializeDelta, sendFullSync, sendDeltaSync,
-        applyFullState, applyDelta, onFrame,
+        applyFullState, applyDelta, onFrame, onClientFrame,
         showToast, addChatMessage,
         get mode() { return mode; },
         get roomId() { return roomId; },
