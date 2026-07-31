@@ -3601,6 +3601,7 @@ canvas.addEventListener("pointerup",(e)=>{
                 if (nodeId && G.navyNodes[nodeId].hp > 0) {
                     G.selectedNavyNode = nodeId;
                     G.selectedNavyNodeOnMap = true;
+                    G.leftPanel = null; // 打开海军节点面板时关闭左侧面板
                     G.selectedCity = null;
                     G.selectedCities = [];
                     G.selectedDivisions = [];
@@ -3677,6 +3678,7 @@ canvas.addEventListener("pointerup",(e)=>{
             G.selectedDivisions = [];
             G.selectedCities = [];
             G.selectedNavyNodeOnMap = false;
+            G.leftPanel = null; // 打开城市面板时关闭左侧面板
             selectedProvince = null;
             G.selectedProvince = null;
             G.diplomacyFocus = null;
@@ -3734,6 +3736,7 @@ canvas.addEventListener("pointerup",(e)=>{
         selectedProvince=findProvinceAt(wx,wy);
         G.selectedProvince=selectedProvince;
         G.diplomacyFocus = null;
+        G.leftPanel = null; // 打开国家交互页面时关闭左侧面板
 
         if (selectedProvince) {
             G.selectedDivisions=[];

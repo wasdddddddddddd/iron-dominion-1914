@@ -1,4 +1,4 @@
-﻿// Iron & Dominion 1914 — 渲染引擎（省份版）
+// Iron & Dominion 1914 — 渲染引擎（省份版）
 
 const canvas = document.getElementById("gameCanvas");
 let ctx = canvas.getContext("2d", { willReadFrequently: false });
@@ -1004,6 +1004,8 @@ function drawGravestones() {
 
 function drawNavyGraves() {
     if (!G.navyGraves || G.navyGraves.length === 0) return;
+    // 缩放到军队级别（zoom>0.35）时才显示沉船标记
+    if (zoom <= 0.35) return;
     let now = G.date.getTime();
     let twoYearsMs = 2 * 365 * 24 * 3600 * 1000;
     // 使用真实时间做浮动动画，避免高倍速下游戏时间飞速流逝导致图标抖动
@@ -1032,7 +1034,15 @@ function drawNavyGraves() {
         ctx.strokeStyle = "rgba(200,160,80,0.25)";
         ctx.lineWidth = 1;
         ctx.stroke();
-        ctx.fillText("💀⚓", sx, floatY);
+        ctx.fillText("💀⚓", sx, floatY - 2);
+        // 舰名
+        if (g.name) {
+            ctx.font = "8px Georgia,serif";
+            ctx.fillStyle = "rgba(200,180,150,0.7)";
+            ctx.textBaseline = "top";
+            let displayName = g.name.length > 10 ? g.name.substring(0, 9) + '…' : g.name;
+            ctx.fillText(displayName, sx, floatY + 8);
+        }
         ctx.restore();
     }
 }
