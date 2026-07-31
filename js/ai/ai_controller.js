@@ -49,9 +49,21 @@ function updateAI() {
         G.newsTimer = 600;
     }
 
+    // 每 50 tick 更新战略评估
+    let tick = G.tick || 0;
+    if (tick % 50 === 0) {
+        for (let co of allCountries) {
+            if (typeof reevaluateStrategy === 'function') reevaluateStrategy(co);
+        }
+    }
+
     for (let co of allCountries) {
         let cd = cs[co]; if (!cd) continue;
-        let pers = getPersonality(co);
+        let pers = typeof getPersonality === 'function' ? getPersonality(co) : null;
+        if (!pers) continue;
+
+        // ========== 0. 撤退处理 ==========
+        if (typeof processRetreats === 'function') processRetreats(co);
 
         // ========== 1. 经济运营 ==========
         aiEconomy(co, cd, pers);
@@ -66,6 +78,14 @@ function updateAI() {
         aiDefenseResponse(co, cd, pers);
     }
 
+    // ========== 4.5 战术编组更新 ==========
+    for (let co of allCountries) {
+        if (typeof updateTacticalGroups === 'function') updateTacticalGroups(co);
+    }
+
+    // ========== 4.6 海军战略 ==========
+    if (typeof aiNavyStrategy === 'function') aiNavyStrategy(allCountries);
+
     // ========== 5. AI 攻击移动 ==========
     aiAttackMovement(allCountries);
 
@@ -78,45 +98,53 @@ function aiEconomy(co, cd, pers) {
     let atWar = isCountryAtWar(co);
     let income = calcCountryIncome(co);
 
-    // 战时工厂建造：钱多就多造
+    // 使用优先级系统建造工厂
     let provs = getCountryProvinces(co).filter(p => p.factories < 3 && p.center);
-    let buildChance = atWar ? (pers.economy * 0.35) : (pers.economy * 0.12);
-    // 国库充裕时大幅提高建造概率
-    if (cd.treasury > 500) buildChance = Math.min(0.95, buildChance * 2.5);
-    else if (cd.treasury > 300) buildChance = Math.min(0.80, buildChance * 1.8);
+    let strat = typeof getStrategy === 'function' ? getStrategy(co) : null;
+    let alloc = strat && strat.alloc ? strat.alloc : {fb:0.6,ms:0.5,cu:0.5,ns:0.3,rr:0.15};
+    let buildChance = alloc.fb * 0.15 * (atWar ? 1.5 : 0.8);
+    if (cd.treasury > 500) buildChance = Math.min(0.90, buildChance * 2.0);
+    else if (cd.treasury > 200) buildChance = Math.min(0.70, buildChance * 1.5);
 
-    if (cd.treasury > 80 && provs.length > 0 && Math.random() < buildChance) {
-        let prov = provs[Math.floor(Math.random() * provs.length)];
-        let city = null;
-        for (let cid in G.cities) {
-            let ct = G.cities[cid];
-            if (ct.provinceId === prov.id && ct.owner === co) { city = ct; break; }
+    if (cd.treasury > 60 && provs.length > 0 && Math.random() < buildChance) {
+        let bestProv = null, bestScore = -999;
+        for (let p of provs) {
+            let score = typeof getFactoryScore === 'function' ? getFactoryScore(p.id, co) : 0;
+            if (score > bestScore) { bestScore = score; bestProv = p; }
         }
-        if (city) {
-            cd.treasury -= 50;
-            if (!G.buildQueue) G.buildQueue = [];
-            G.buildQueue.push({ type: 'factory', province: prov.id, days: 10, totalDays: 10, cityId: city.id, cityLon: city.lon, cityLat: city.lat });
+        if (bestProv && bestScore > 0) {
+            let city = null;
+            for (let cid in G.cities) {
+                let ct = G.cities[cid];
+                if (ct.provinceId === bestProv.id && ct.owner === co) { city = ct; break; }
+            }
+            if (city) {
+                cd.treasury -= 50;
+                if (!G.buildQueue) G.buildQueue = [];
+                G.buildQueue.push({ type: 'factory', province: bestProv.id, days: 10, totalDays: 10, cityId: city.id, cityLon: city.lon, cityLat: city.lat });
+            }
         }
     }
 
-    // 升级小城市：AI 大城市没用，极大降低优先级
-    let upgradeChance = atWar ? (pers.economy * 0.01) : (pers.economy * 0.015);
-    if (cd.treasury > 1500) upgradeChance = Math.min(0.3, upgradeChance * 2);
-    else if (cd.treasury > 1000) upgradeChance = Math.min(0.15, upgradeChance * 1.5);
+    // 优先级城市升级
+    let upgradeChance = alloc.cu * 0.02 * (atWar ? 0.5 : 1.0);
+    if (cd.treasury > 1200) upgradeChance = Math.min(0.4, upgradeChance * 2);
+    else if (cd.treasury > 800) upgradeChance = Math.min(0.25, upgradeChance * 1.5);
 
-    if (cd.treasury > 800 && Math.random() < upgradeChance) {
-        let smallCities = [];
+    if (cd.treasury > 600 && Math.random() < upgradeChance) {
+        let candidates = [];
         for (let cid in G.cities) {
             let ct = G.cities[cid];
-            if (ct.owner === co && !isMajorCity(ct.id) && !ct.occupierFlag) {
-                smallCities.push(ct);
-            }
+            if (ct.owner !== co || ct.isCapital || isMajorCity(ct.id) || ct.occupierFlag) continue;
+            let score = typeof getCityUpgradeScore === 'function' ? getCityUpgradeScore(ct) : 0;
+            if (score >= 0) candidates.push({city:ct,score:score});
         }
-        if (smallCities.length > 0) {
-            let city = smallCities[Math.floor(Math.random() * smallCities.length)];
+        candidates.sort((a,b) => b.score - a.score);
+        if (candidates.length > 0 && candidates[0].score > 0) {
+            let city = candidates[0].city;
             cd.treasury -= 150;
             if (!G.buildQueue) G.buildQueue = [];
-            G.buildQueue.push({ type: 'upgrade_city', province: city.provinceId, days: 40, totalDays: 40, cityId: city.id, cityLon: city.lon, cityLat: city.lat, cityName: city.name });
+            G.buildQueue.push({ type: 'upgrade_city', province: city.id, days: 40, totalDays: 40, cityId: city.id, cityLon: city.lon, cityLat: city.lat, cityName: city.name });
         }
     }
 }
@@ -168,16 +196,29 @@ function aiProduction(co, cd, pers) {
         let ps = getCountryProvinces(co).filter(p => p.garrison < 3);
         if (ps.length === 0) break;
 
-        // 计算目标兵力构成
-        let infantryRatio = atWar ? 0.35 : 0.5;
-        let engineerRatio = 0.15;
-        let cavalryRatio = pers.preferCavalry * 0.3;
-        let artilleryRatio = pers.preferArtillery * 0.4;
+        // 自适应目标兵力构成
+        let infantryRatio = atWar ? 0.35 : 0.50;
+        let engineerRatio = 0.10;
+        let cavalryRatio = pers.preferCavalry * 0.25;
+        let artilleryRatio = pers.preferArtillery * 0.35;
+        if (atWar) { artilleryRatio += 0.20; engineerRatio += 0.08; }
 
-        if (atWar) {
-            artilleryRatio += 0.20;
-            engineerRatio += 0.05;
+        // 根据敌方构成调整
+        let enemyTypes = {infantry:0,engineer:0,cavalry:0,artillery:0,navy:0};
+        for (let e of G.divisions) {
+            if (e.strength <= 0 || !atWarWithList.includes(e.country)) continue;
+            enemyTypes[e.type] = (enemyTypes[e.type] || 0) + 1;
         }
+        let eTotal = enemyTypes.infantry + enemyTypes.engineer + enemyTypes.cavalry + enemyTypes.artillery;
+        if (eTotal > 0) {
+            let eCavR = enemyTypes.cavalry / eTotal;
+            let eArtR = enemyTypes.artillery / eTotal;
+            if (eCavR > 0.20) infantryRatio += 0.10;
+            if (eArtR > 0.20) cavalryRatio += 0.10;
+        }
+        // 防守战略→更多炮兵
+        let strat = typeof getStrategy === 'function' ? getStrategy(co) : null;
+        if (strat && strat.goal === 'DEFENSIVE') artilleryRatio += 0.10;
 
         let myInfantry = G.divisions.filter(d => d.country === co && d.type === 'infantry' && d.strength > 0).length;
         let myEngineer = G.divisions.filter(d => d.country === co && d.type === 'engineer' && d.strength > 0).length;
@@ -194,7 +235,6 @@ function aiProduction(co, cd, pers) {
 
         if (affordable.length === 0) break;
 
-        let type = 'infantry';
         let deficits = {
             infantry: Math.max(0, infantryRatio - myInfantry / total),
             engineer: Math.max(0, engineerRatio - myEngineer / total),
@@ -215,20 +255,174 @@ function aiProduction(co, cd, pers) {
         if (atWar && affordable.includes('engineer') && myEngineer < 3 && Math.random() > 0.6) type = 'engineer';
 
         let prov = ps[Math.floor(Math.random() * ps.length)];
-        createDivision(prov.id, co, type);
+        // AI 单位通过城市生产队列产出（从建筑附近走出来）
+        let aiCity = null;
+        if (G.cities) {
+            for (let cid in G.cities) {
+                let c = G.cities[cid];
+                if (c.owner === co && c.hp > 0 && c.provinceId === prov.id) { aiCity = c; break; }
+            }
+            if (!aiCity) {
+                for (let cid in G.cities) {
+                    let c = G.cities[cid];
+                    if (c.owner === co && c.hp > 0) { aiCity = c; break; }
+                }
+            }
+        }
+        if (aiCity && cd.treasury >= UNIT_TYPES[type].cost) {
+            let buildDays = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5 }[type] || 20;
+            let mc = UNIT_TYPES[type].manpower || 10;
+            if (cd.manpower >= mc) {
+                cd.treasury -= UNIT_TYPES[type].cost;
+                cd.manpower -= mc;
+                if (!G.buildQueue) G.buildQueue = [];
+                G.buildQueue.push({ type: 'unit', unitType: type, province: aiCity.provinceId, days: buildDays, totalDays: buildDays, cityId: aiCity.id, cityLon: aiCity.lon, cityLat: aiCity.lat, country: co });
+            } else {
+                createDivision(prov.id, co, type);
+            }
+        } else {
+            createDivision(prov.id, co, type);
+        }
+    }
+
+    // AI 海军建造（直接调用 createShip，不经过玩家队列）
+    if (typeof createShip === 'function' && typeof GREAT_NAVY_POWERS !== 'undefined') {
+        let isGP = GREAT_NAVY_POWERS.includes(co);
+        if (isGP && G.navyNodes) {
+            let myNodes = Object.keys(G.navyNodes).filter(id => G.navyNodes[id].country === co);
+            if (myNodes.length > 0 && cd.treasury >= 350 && cd.manpower >= 3) {
+                let myNavy = G.divisions.filter(d => d.country === co && (typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy') && d.strength > 0).length;
+                let enemyNavyCount = 0;
+                let atWarList = typeof getEnemiesOf === 'function' ? getEnemiesOf(co) : [];
+                for (let e of G.divisions) {
+                    if ((typeof isSeaType === 'function' ? isSeaType(e.type) : e.type === 'navy') && e.strength > 0 && atWarList.includes(e.country)) enemyNavyCount++;
+                }
+                let maxShips = myNodes.reduce((sum, nid) => sum + ((G.navyNodes[nid].level || 1) * 4), 0);
+                let needNavy = atWarList.length > 0 && myNavy < Math.min(maxShips, Math.max(3, enemyNavyCount * 0.5));
+                if (!needNavy && atWarList.length === 0) needNavy = myNavy < Math.min(maxShips, 2);
+                if (needNavy && Math.random() < 0.015) {
+                    let nodeId = myNodes[0];
+                    let bestNode = null, bestLv = -1;
+                    for (let nid of myNodes) {
+                        let n = G.navyNodes[nid];
+                        if (n.level > bestLv) { bestLv = n.level; bestNode = n; }
+                    }
+                    if (bestNode) nodeId = bestNode.id;
+                    // 德国有机会造潜艇
+                    let buildSub = co === 'GERMANY' && Math.random() < 0.4 && cd.treasury >= 350 && cd.manpower >= 3;
+                    if (buildSub) {
+                        let seaPos = typeof findSeaPosition === 'function' ? findSeaPosition(G.navyNodes[nodeId].lon, G.navyNodes[nodeId].lat) : null;
+                        let bestProv = typeof findNearestProvince === 'function' ? findNearestProvince(G.navyNodes[nodeId].lon, G.navyNodes[nodeId].lat) : null;
+                        if (seaPos && bestProv) {
+                            let divName = generateUnitName(co, 'submarine');
+                            let _sub = {
+                                id: G.divIdCounter++, name: divName,
+                                type: 'submarine', province: bestProv, country: co,
+                                rx: seaPos[0], ry: seaPos[1],
+                                state: 'idle', targetX: null, targetY: null,
+                                attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
+                                fireCooldown: 0, maxFireCd: 0, exp: 0,
+                                submerged: false,
+                            };
+                            let ut = UNIT_TYPES.submarine;
+                            _sub.maxStrength = ut.maxStr; _sub.strength = ut.maxStr;
+                            G.divisions.push(_sub);
+                            cd.treasury -= 350; cd.manpower -= 3;
+                            if (cd) cd.divCount = (cd.divCount || 0) + 1;
+                        }
+                    } else {
+                        let ship = createShip(nodeId, co);
+                        if (ship) {
+                            let seaPos = typeof findSeaPosition === 'function' ? findSeaPosition(G.navyNodes[nodeId].lon, G.navyNodes[nodeId].lat) : null;
+                            let bestProv = typeof findNearestProvince === 'function' ? findNearestProvince(G.navyNodes[nodeId].lon, G.navyNodes[nodeId].lat) : null;
+                            if (seaPos && bestProv) {
+                                let divName = generateUnitName(co, 'navy') + ' ' + ship.name;
+                                let _div = {
+                                    id: G.divIdCounter++, name: divName,
+                                    type: 'navy', province: bestProv, country: co,
+                                    rx: seaPos[0], ry: seaPos[1],
+                                    state: 'idle', targetX: null, targetY: null,
+                                    attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
+                                    fireCooldown: 0, maxFireCd: 0, exp: 0,
+                                    shipId: ship.id,
+                                };
+                                if (typeof applyNavyShipStats === 'function') applyNavyShipStats(_div, ship);
+                                G.divisions.push(_div);
+                                cd.treasury -= 500;
+                                cd.manpower -= 5;
+                                if (cd) cd.divCount = (cd.divCount || 0) + 1;
+                            }
+                        }
+                    }
+                }
+            }
+            // AI 升级海军节点
+            if (cd.treasury > 800 && Math.random() < 0.05) {
+                for (let nid of myNodes) {
+                    let node = G.navyNodes[nid];
+                    if (node.upgradeTimer > 0) continue;
+                    let nextLv = null;
+                    for (let nl of (typeof NODE_LEVELS !== 'undefined' ? NODE_LEVELS : [])) {
+                        if (nl.level === node.level + 1) { nextLv = nl; break; }
+                    }
+                    if (nextLv && cd.treasury >= nextLv.upgradeCost) {
+                        cd.treasury -= nextLv.upgradeCost;
+                        node.upgradeTimer = nextLv.upgradeTime;
+                        node.upgradeProgress = 0;
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
 // ========== 3. 外交策略 ==========
+// AI 外交行动同样消耗外交点数（与玩家一致：宣战5/同盟10/保障10），点数不足则放弃
+function aiSpendDiplomacy(co, cost) {
+    if (!G.diplomacyPoints) return false;
+    if ((G.diplomacyPoints[co] || 0) < cost) return false;
+    G.diplomacyPoints[co] -= cost;
+    return true;
+}
+
 function aiDiplomacy(co, cd, pers, allCountries) {
-    if (Math.random() > 0.25) return; // 降低外交频率
+    if (Math.random() > 0.25) return;
     let atWar = isCountryAtWar(co);
     let atWarWithList = getEnemiesOf(co);
 
-    // 计算当前同盟数量
     let currentAllies = 0;
     if (G.alliances && G.alliances[co]) {
         currentAllies = Object.keys(G.alliances[co]).length;
+    }
+
+    // === 同盟义务：盟友已参战则自动加入（进攻方也触发） ===
+    if (!atWar && G.alliances && G.alliances[co] && pers.diplomacy > 0.3) {
+        for (let ally in G.alliances[co]) {
+            if (!isCountryAtWar(ally)) continue;
+            let allyEnemies = getEnemiesOf(ally);
+            for (let enemy of allyEnemies) {
+                if (atWarWithList.includes(enemy) || areAtWar(co, enemy)) continue;
+                let enemyCount = G.divisions.filter(d => d.country === enemy && d.strength > 0).length;
+                let myCount = G.divisions.filter(d => d.country === co && d.strength > 0).length;
+                let powerRatio = myCount / Math.max(1, enemyCount);
+                let borderProvs = getCountryProvinces(co).filter(p =>
+                    Object.values(G.provinceData).some(np =>
+                        np.country === enemy && np.center && p.center &&
+                        Math.hypot(np.center[0] - p.center[0], np.center[1] - p.center[1]) < 1.0
+                    )
+                );
+                let shouldJoin = false;
+                if (borderProvs.length > 0 && powerRatio > 0.8) shouldJoin = true;
+                else if (powerRatio > 1.5 && pers.aggression > 0.4) shouldJoin = true;
+                else if (powerRatio > 2.5) shouldJoin = true;
+                if (shouldJoin && Math.random() < pers.diplomacy * 0.3 && aiSpendDiplomacy(co, 5)) {
+                    declareWar(co, enemy);
+                    addGameLog((COUNTRY_CN[co] || co) + "履行同盟义务向" + (COUNTRY_CN[enemy] || enemy) + "宣战！");
+                    atWarWithList.push(enemy);
+                }
+            }
+        }
     }
 
     for (let other of allCountries) {
@@ -237,10 +431,10 @@ function aiDiplomacy(co, cd, pers, allCountries) {
         let isGreatPowerOther = isGreatPower(other);
 
         // === 宣战逻辑 ===
-        if (!atWar && !areAtWar(co, other) && pers.aggression > 0.3) {
+        if (co === 'FRANCE' && other === 'AUSTRIA_HUNGARY') continue;
+        if (!atWar && !areAtWar(co, other) && pers.aggression > 0.2) {
             let shouldDeclare = false;
             let otherCount = G.divisions.filter(d => d.country === other && d.strength > 0).length;
-            // 计算目标及其同盟的总兵力
             let totalEnemyCount = otherCount;
             if (G.alliances && G.alliances[other]) {
                 for (let ally in G.alliances[other]) {
@@ -250,15 +444,13 @@ function aiDiplomacy(co, cd, pers, allCountries) {
             let myCount = G.divisions.filter(d => d.country === co && d.strength > 0).length;
             let powerRatio = myCount / Math.max(1, totalEnemyCount);
 
-            // 边境接壤判定
-            let borderProvs = getCountryProvinces(co).filter(p => {
-                return Object.values(G.provinceData).some(np =>
+            let borderProvs = getCountryProvinces(co).filter(p =>
+                Object.values(G.provinceData).some(np =>
                     np.country === other && np.center && p.center &&
                     Math.hypot(np.center[0] - p.center[0], np.center[1] - p.center[1]) < 1.0
-                );
-            });
+                )
+            );
 
-            // 目标有同盟列强 → 不敢打
             let hasGreatPowerAlly = false;
             if (G.alliances && G.alliances[other]) {
                 for (let ally in G.alliances[other]) {
@@ -266,18 +458,20 @@ function aiDiplomacy(co, cd, pers, allCountries) {
                 }
             }
 
-            if (!hasGreatPowerAlly && !isGreatPower(other)) {
-                // 只能对邻国宣战：兵力3倍以上
-                if (borderProvs.length > 0 && powerRatio > 3 && pers.expansionPower > 0.5 && Math.random() < pers.aggression * 0.04) {
+            if (!hasGreatPowerAlly) {
+                let threshold = pers.aggression > 0.7 ? 1.3 : (pers.aggression > 0.5 ? 1.8 : 2.5);
+                if (borderProvs.length > 0 && powerRatio > threshold && Math.random() < pers.aggression * 0.04) {
                     shouldDeclare = true;
                 }
-                // 边境接壤：兵力2倍以上
-                if (borderProvs.length > 0 && powerRatio > 2 && Math.random() < pers.aggression * 0.03) {
+                if (borderProvs.length > 0 && !isGreatPowerOther && powerRatio > 1.2 && Math.random() < pers.aggression * 0.03) {
                     shouldDeclare = true;
                 }
             }
+            if (hasGreatPowerAlly && borderProvs.length > 0 && powerRatio > 2.5 && pers.aggression > 0.6 && Math.random() < 0.02) {
+                shouldDeclare = true;
+            }
 
-            if (shouldDeclare) {
+            if (shouldDeclare && aiSpendDiplomacy(co, 5)) {
                 declareWar(co, other);
                 addGameLog((COUNTRY_CN[co] || co) + "向" + (COUNTRY_CN[other] || other) + "宣战！");
             }
@@ -285,7 +479,6 @@ function aiDiplomacy(co, cd, pers, allCountries) {
 
         // === 结盟逻辑（最多2个同盟，优先邻居） ===
         if (!areAtWar(co, other) && !G.alliances[co]?.[other] && !G.alliances[other]?.[co] && currentAllies < 2) {
-            // 禁止跨阵营结盟：同盟国不能与协约国核心成员结盟
             let centralCore = ['GERMANY', 'AUSTRIA_HUNGARY', 'BULGARIA', 'TURKEY'];
             let ententeCore = ['FRANCE', 'UK', 'RUSSIA', 'SERBIA'];
             let coIsCentral = centralCore.includes(co);
@@ -295,33 +488,28 @@ function aiDiplomacy(co, cd, pers, allCountries) {
             if ((coIsCentral && otherIsEntente) || (coIsEntente && otherIsCentral)) continue;
             let shouldAlly = false;
 
-            // 计算边境接壤
-            let borderProvs = getCountryProvinces(co).filter(p => {
-                return Object.values(G.provinceData).some(np =>
+            let borderProvs = getCountryProvinces(co).filter(p =>
+                Object.values(G.provinceData).some(np =>
                     np.country === other && np.center && p.center &&
                     Math.hypot(np.center[0] - p.center[0], np.center[1] - p.center[1]) < 1.0
-                );
-            });
+                )
+            );
 
-            // 必须接壤或有共同敌人才考虑结盟
             let isNeighbor = borderProvs.length > 0;
             let commonEnemies = atWarWithList.filter(e => getEnemiesOf(other).includes(e));
 
-            // 条件1：邻国且有共同敌人（最优先）
             if (isNeighbor && commonEnemies.length > 0 && Math.random() < pers.diplomacy * 0.25) {
                 shouldAlly = true;
             }
-            // 条件2：邻国且关系好（rel > 40）
             let rel = G.relations?.[co]?.[other] || 0;
             if (isNeighbor && rel > 40 && Math.random() < pers.diplomacy * 0.12) {
                 shouldAlly = true;
             }
-            // 条件3：弱国寻求邻国强国保护（必须接壤）
             if (!isGreatPower(co) && isGreatPowerOther && isNeighbor && cd.divCount < 10 && Math.random() < pers.diplomacy * 0.15) {
                 shouldAlly = true;
             }
 
-            if (shouldAlly) {
+            if (shouldAlly && aiSpendDiplomacy(co, 10)) {
                 if (!G.alliances[co]) G.alliances[co] = {};
                 G.alliances[co][other] = true;
                 if (!G.alliances[other]) G.alliances[other] = {};
@@ -334,22 +522,20 @@ function aiDiplomacy(co, cd, pers, allCountries) {
         // === 保障独立 ===
         if (!areAtWar(co, other) && !isGuaranteedBy(other, co)) {
             let shouldGuarantee = false;
-            // 强国保障弱国
             if (isGreatPower(co) && !isGreatPowerOther && cd.divCount > 15 && Math.random() < pers.diplomacy * 0.05) {
                 shouldGuarantee = true;
             }
-            // 邻国保障
-            let borderProvs = getCountryProvinces(co).filter(p => {
-                return Object.values(G.provinceData).some(np =>
+            let borderProvs = getCountryProvinces(co).filter(p =>
+                Object.values(G.provinceData).some(np =>
                     np.country === other && np.center && p.center &&
                     Math.hypot(np.center[0] - p.center[0], np.center[1] - p.center[1]) < 0.8
-                );
-            });
+                )
+            );
             if (borderProvs.length > 0 && !isGreatPowerOther && pers.diplomacy > 0.5 && Math.random() < 0.08) {
                 shouldGuarantee = true;
             }
 
-            if (shouldGuarantee) {
+            if (shouldGuarantee && aiSpendDiplomacy(co, 10)) {
                 guaranteeIndependence(co, other);
                 addGameLog((COUNTRY_CN[co] || co) + "保障" + (COUNTRY_CN[other] || other) + "独立");
             }
@@ -375,10 +561,8 @@ function aiDefenseResponse(co, cd, pers) {
     let atWarWithList = getEnemiesOf(co);
     if (atWarWithList.length === 0) return;
 
-    // 检测领土内的敌人 - 优化：先算bbox再检查，避免O(n*m)全扫描
     let myProvinceCenters = getCountryProvinces(co).filter(p => p.center).map(p => p.center);
     if (myProvinceCenters.length === 0) return;
-    // 计算国土bbox
     let minX = 999, maxX = -999, minY = 999, maxY = -999;
     for (let ctr of myProvinceCenters) {
         if (ctr[0] < minX) minX = ctr[0]; if (ctr[0] > maxX) maxX = ctr[0];
@@ -390,7 +574,6 @@ function aiDefenseResponse(co, cd, pers) {
     for (let d of G.divisions) {
         if (d.country === co || d.strength <= 0) continue;
         if (!atWarWithList.includes(d.country)) continue;
-        // 快速bbox排除
         if (d.rx < minX || d.rx > maxX || d.ry < minY || d.ry > maxY) continue;
         for (let ctr of myProvinceCenters) {
             let dx = Math.abs(d.rx - ctr[0]), dy = Math.abs(d.ry - ctr[1]);
@@ -399,9 +582,77 @@ function aiDefenseResponse(co, cd, pers) {
         }
     }
 
-    if (enemyUnits.length === 0) return;
+    // === 城市驻防：每个边境城市保持至少1个师的驻军 ===
+    if (pers.fortify > 0.2 && G.cities) {
+        for (let cid in G.cities) {
+            let ct = G.cities[cid];
+            if (ct.owner !== co || ct.isCapital) continue;
+            let isBorderCity = false;
+            for (let pid in G.provinceData) {
+                let pd = G.provinceData[pid];
+                if (pd.country === co || !pd.center) continue;
+                if (Math.hypot(pd.center[0] - ct.lon, pd.center[1] - ct.lat) < 2.0) { isBorderCity = true; break; }
+            }
+            if (!isBorderCity) continue;
+            let nearbyDefenders = G.divisions.filter(d =>
+                d.country === co && d.strength > 0 &&
+                Math.hypot(d.rx - ct.lon, d.ry - ct.lat) < 1.5
+            ).length;
+            let neededGarrison = Math.min(2, Math.ceil(cd.divCount * 0.05));
+            if (nearbyDefenders >= neededGarrison) continue;
+            let idleUnit = null;
+            for (let d of G.divisions) {
+                if (d.country === co && d.strength > 0 && d.state === 'idle' && !G.patrolTargets[d.id]) {
+                    idleUnit = d; break;
+                }
+            }
+            if (idleUnit) {
+                if (typeof aiMoveToTarget === 'function') aiMoveToTarget(idleUnit, ct.lon, ct.lat);
+                else { idleUnit.state = 'moving'; idleUnit.targetX = ct.lon; idleUnit.targetY = ct.lat; }
+            }
+        }
+    }
 
-    // 动员防御：调动空闲部队到敌人附近
+    // === 突破点防御：发现多处敌单位聚集区域，集中己方兵力 ===
+    if (enemyUnits.length > 3) {
+        let clusters = [];
+        for (let e of enemyUnits) {
+            let found = false;
+            for (let cl of clusters) {
+                if (Math.hypot(cl.cx - e.rx, cl.cy - e.ry) < 1.5) { cl.count++; cl.totalStr += e.strength; found = true; break; }
+            }
+            if (!found) clusters.push({ cx: e.rx, cy: e.ry, count: 1, totalStr: e.strength });
+        }
+        clusters.sort((a, b) => b.count - a.count);
+        if (clusters.length > 0 && clusters[0].count > 2) {
+            let breachPt = clusters[0];
+            let nearbyDefenders = G.divisions.filter(d =>
+                d.country === co && d.strength > 0 &&
+                Math.hypot(d.rx - breachPt.cx, d.ry - breachPt.cy) < 2.5
+            ).length;
+            let needed = Math.min(clusters[0].count + 1, Math.ceil(cd.divCount * 0.2));
+            if (nearbyDefenders < needed) {
+                let idleForBreach = [];
+                for (let d of G.divisions) {
+                    if (d.country === co && d.strength > 0 && d.state === 'idle' && !G.patrolTargets[d.id]) {
+                        idleForBreach.push(d);
+                    }
+                }
+                let shortfall = needed - nearbyDefenders;
+                for (let i = 0; i < Math.min(shortfall, idleForBreach.length); i++) {
+                    let d = idleForBreach[i];
+                    let tx = breachPt.cx + (Math.random() - 0.5) * 0.5;
+                    let ty = breachPt.cy + (Math.random() - 0.5) * 0.5;
+                    if (typeof aiMoveToTarget === 'function') aiMoveToTarget(d, tx, ty);
+                    else { d.state = 'moving'; d.targetX = tx; d.targetY = ty; }
+                }
+            }
+            return;
+        }
+    }
+
+    // === 常规防御：调动空闲部队到敌人附近 ===
+    if (enemyUnits.length === 0) return;
     let idleUnits = [];
     for (let d of G.divisions) {
         if (d.country === co && d.strength > 0 && d.state === 'idle' && !G.patrolTargets[d.id]) {
@@ -409,7 +660,6 @@ function aiDefenseResponse(co, cd, pers) {
         }
     }
 
-    // 按威胁程度排序敌人（奥匈优先应对俄国）
     let russiaPriority = co === 'AUSTRIA_HUNGARY';
     for (let enemy of enemyUnits) {
         let priority = (russiaPriority && enemy.country === 'RUSSIA') ? 2.0 : 1.0;
@@ -436,7 +686,6 @@ function aiDefenseResponse(co, cd, pers) {
         }
     }
 
-    // 边界巡逻：复用已找到的 enemyUnits 避免重复扫描
     if (Math.random() < pers.fortify * 0.25) {
         let borderProvs = [];
         for (let p of getCountryProvinces(co)) {
@@ -463,12 +712,49 @@ function aiDefenseResponse(co, cd, pers) {
     }
 }
 
+// ========== 4.6 海军战略（舰队集中） ==========
+function aiNavyStrategy(allCountries) {
+    for (let co of allCountries) {
+        let atWarWithList = getEnemiesOf(co);
+        if (atWarWithList.length === 0) continue;
+        if (typeof isGreatPower !== 'function' || !isGreatPower(co)) continue;
+        let isNavalPower = ['UK', 'GERMANY', 'FRANCE', 'ITALY', 'RUSSIA', 'TURKEY', 'AUSTRIA_HUNGARY'].includes(co);
+        if (!isNavalPower) continue;
+
+        let myShips = G.divisions.filter(d => d.country === co && d.type === 'navy' && d.strength > 0);
+        if (myShips.length < 3) continue;
+
+        let enemyShips = G.divisions.filter(d =>
+            d.type === 'navy' && d.strength > 0 &&
+            atWarWithList.includes(d.country)
+        );
+
+        // 舰队集中：将分散的己方舰船聚集成群（距离 > 3 的拉近距离）
+        for (let i = 0; i < myShips.length; i++) {
+            let si = myShips[i];
+            if (si.state === 'moving' || si.state === 'retreating') continue;
+            let nearestFriend = null, bestDist = Infinity;
+            for (let j = 0; j < myShips.length; j++) {
+                if (i === j) continue;
+                let sj = myShips[j];
+                let dist = Math.hypot(si.rx - sj.rx, si.ry - sj.ry);
+                if (dist < bestDist) { nearestFriend = sj; bestDist = dist; }
+            }
+            if (nearestFriend && bestDist > 3 && Math.random() < 0.1) {
+                let tx = (si.rx + nearestFriend.rx) / 2;
+                let ty = (si.ry + nearestFriend.ry) / 2;
+                if (!isLandPoint(tx, ty)) { aiMoveTo(si, tx, ty); }
+            }
+        }
+    }
+}
+
 // ========== 5. AI攻击移动 ==========
 function aiAttackMovement(allCountries) {
-    // 预计算：每个国家的城市沦陷比例（避免每个师团重复计算）
     let cityLossCache = {};
-    let enemyCityCache = {}; // 每个国家的敌对城市列表
-    let alliedCache = {}; // 每个国家的同盟集合
+    let enemyCityCache = {};
+    let alliedCache = {};
+    let frontTargetCache = {}; // frontTargetCache[co] = [{lon,lat}, ...] 进攻方向目标
 
     for (let co of allCountries) {
         let myCities = 0, myTotal = 0;
@@ -481,15 +767,15 @@ function aiAttackMovement(allCountries) {
         }
         cityLossCache[co] = myTotal > 0 ? 1 - (myCities / myTotal) : 0;
 
-        // 预计算敌对城市列表
         let atWarList = getEnemiesOf(co);
+        let enemyCities = [];
         if (atWarList.length > 0) {
             let allySet = new Set();
             if (G.alliances && G.alliances[co]) {
                 for (let ally in G.alliances[co]) allySet.add(ally);
             }
             alliedCache[co] = allySet;
-            let enemyCities = [];
+            enemyCities = [];
             for (let cid in G.cities) {
                 let ct = G.cities[cid];
                 if (!ct || ct.hp <= 0 || ct.owner === co || ct.owner === G.playerCountry) continue;
@@ -499,22 +785,55 @@ function aiAttackMovement(allCountries) {
             }
             enemyCityCache[co] = enemyCities;
         }
+        // 计算进攻方向目标
+        let frontTargets = [];
+        if (atWarList.length > 0) {
+            let strategy = typeof getStrategy === 'function' ? getStrategy(co) : null;
+            if (strategy && strategy.theaterPlans) {
+                for (let tp of strategy.theaterPlans) {
+                    if (tp.targetCities) {
+                        for (let tc of tp.targetCities) {
+                            frontTargets.push({ lon: tc.lon, lat: tc.lat });
+                        }
+                    }
+                }
+            }
+            if (frontTargets.length === 0) {
+                let myProvs = getCountryProvinces ? getCountryProvinces(co) : [];
+                for (let p of myProvs) {
+                    if (!p.center) continue;
+                    for (let pid in G.provinceData) {
+                        let np = G.provinceData[pid];
+                        if (!np.center || !atWarList.includes(np.country)) continue;
+                        if (Math.hypot(np.center[0] - p.center[0], np.center[1] - p.center[1]) < 2.0) {
+                            frontTargets.push({ lon: np.center[0] + (Math.random() - 0.5) * 0.3, lat: np.center[1] + (Math.random() - 0.5) * 0.3 });
+                            break;
+                        }
+                    }
+                }
+            }
+            if (frontTargets.length === 0 && enemyCities.length > 0) {
+                for (let ec of enemyCities) {
+                    frontTargets.push({ lon: ec.lon, lat: ec.lat });
+                }
+            }
+        }
+        frontTargetCache[co] = frontTargets;
     }
 
     for (let d of G.divisions) {
-        if (d.state === 'moving' || d.strength <= 0) continue;
+        if (d.state === 'moving' || d.state === 'retreating' || d.strength <= 0) continue;
         if (d.country === G.playerCountry) continue;
-        if (d.type === 'navy' && typeof isLandPoint === 'function' && isLandPoint(d.rx, d.ry)) continue;
+        if ((typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy') && typeof isLandPoint === 'function' && isLandPoint(d.rx, d.ry)) continue;
 
         let co = d.country;
         let atWarWithList = getEnemiesOf(co);
         if (atWarWithList.length === 0) continue;
 
-        // ====== 海军 AI：血量低→撤退，否则先打敌方海军，再沿岸支援 ======
-        if (d.type === 'navy') {
+        // ====== 海军/潜艇 AI ======
+        if (typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy') {
             let acted = false;
-            let hpRatio = d.strength / (d.maxStrength || 500);
-            // 1) 血量 < 30% → 撤回最近海军节点
+            let hpRatio = d.strength / (d.maxStrength || (d.type === 'submarine' ? 200 : 500));
             if (!acted && hpRatio < 0.3 && G.navyNodes) {
                 let bestNode = null, bestDist = Infinity;
                 for (let nid in G.navyNodes) {
@@ -528,25 +847,32 @@ function aiAttackMovement(allCountries) {
                     if (nw) { aiMoveTo(d, nw[0], nw[1]); acted = true; }
                 }
             }
-
-            // 2) 搜索敌方海军
             if (!acted) {
                 let enemyNavy = null, bestNavyDist = Infinity;
                 for (let e of G.divisions) {
-                    if (e.type !== 'navy' || e.country === co || e.strength <= 0) continue;
+                    if ((typeof isSeaType === 'function' ? !isSeaType(e.type) : e.type !== 'navy') || e.country === co || e.strength <= 0 || e.submerged) continue;
                     if (!atWarWithList.includes(e.country)) continue;
+                    if (G.navyNodes) {
+                        let inNode = false;
+                        for (let nid in G.navyNodes) {
+                            let node = G.navyNodes[nid];
+                            if (node.country === e.country && Math.hypot(node.lon - e.rx, node.lat - e.ry) < (node.healRadius || 0.15) * 3) {
+                                inNode = true; break;
+                            }
+                        }
+                        if (inNode) continue;
+                    }
                     let dx = Math.abs(d.rx - e.rx), dy = Math.abs(d.ry - e.ry);
                     if (dx > 20 || dy > 20) continue;
                     let dist = Math.hypot(dx, dy);
                     if (dist < bestNavyDist) { enemyNavy = e; bestNavyDist = dist; }
                 }
                 if (enemyNavy) {
-                    if (bestNavyDist > 2) aiMoveToEnemy(d, enemyNavy);
+                    let ut = UNIT_TYPES[d.type] || UNIT_TYPES.navy;
+                    if (bestNavyDist > ut.range * 0.85) aiMoveToEnemy(d, enemyNavy);
                     acted = true;
                 }
             }
-
-            // 3) 无敌方海军 → 沿岸轰炸
             if (!acted) {
                 let cityTarget = null, bestCityDist = Infinity;
                 let enemyCities = enemyCityCache[co];
@@ -574,8 +900,6 @@ function aiAttackMovement(allCountries) {
                     } else { acted = true; }
                 }
             }
-
-            // 4) 无事可做：随便找一个敌人单位靠近
             if (!acted) {
                 let fallbackTarget = null, fallbackDist = Infinity;
                 for (let e of G.divisions) {
@@ -593,15 +917,13 @@ function aiAttackMovement(allCountries) {
                     aiMoveTo(d, tx, ty); acted = true;
                 }
             }
-
-            if (acted) continue; // 有动作才跳过陆战逻辑，否则交给下面的陆战判断
+            if (acted) continue;
         }
 
         let pers = getPersonality(co);
         let defensiveMode = cityLossCache[co] > 0.3;
 
         if (defensiveMode) {
-            // 防守模式：寻找本国领土内的敌人
             let myProvinceCenters = getCountryProvinces(co).filter(p => p.center).map(p => p.center);
             let homeEnemy = null, bestHomeDist = 999;
             for (let e of G.divisions) {
@@ -629,25 +951,95 @@ function aiAttackMovement(allCountries) {
             }
         }
 
-        // 攻城模式：使用预计算的敌对城市列表
+        // == 攻城/交火/进军 三阶段目标选择 ==
+        // 0. 炮兵优先攻城（西线加强）
         let enemyCities = enemyCityCache[co];
-        let targetCity = null, bestCityDist = 999;
+        if (d.type === 'artillery' && enemyCities && enemyCities.length > 0) {
+            let bestCity = null, bestCityD = 999;
+            for (let ct of enemyCities) {
+                let dx = Math.abs(d.rx - ct.lon), dy = Math.abs(d.ry - ct.lat);
+                if (dx > 25 || dy > 25) continue;
+                let dist = Math.hypot(dx, dy);
+                if (dist < bestCityD) { bestCity = ct; bestCityD = dist; }
+            }
+            if (bestCity) {
+                d.focusCity = bestCity.id;
+                let dx = bestCity.lon - d.rx, dy = bestCity.lat - d.ry;
+                let dist = Math.hypot(dx, dy);
+                let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
+                let desiredDist = ut.range * 0.85;
+                if (dist > desiredDist) {
+                    let tx = d.rx + (dx / dist) * (dist - desiredDist);
+                    let ty = d.ry + (dy / dist) * (dist - desiredDist);
+                    if (typeof aiMoveToTarget === 'function') aiMoveToTarget(d, tx, ty);
+                    else { d.state = "moving"; d.targetX = tx; d.targetY = ty; }
+                }
+                continue;
+            }
+        }
+
+        // 0.5 低血量城市抢占（评估守军）
         if (enemyCities) {
-            let isAH = co === 'AUSTRIA_HUNGARY';
-            let isGer = co === 'GERMANY';
+            let rushTarget = null, rushScore = 999;
             for (let ct of enemyCities) {
                 let dx = Math.abs(d.rx - ct.lon), dy = Math.abs(d.ry - ct.lat);
                 if (dx > 15 || dy > 15) continue;
                 let dist = Math.hypot(dx, dy);
-                let weight = 1.0;
-                if (isAH && ct.owner === 'RUSSIA') weight = 0.5;
-                if (isGer && (ct.owner === 'FRANCE' || ct.owner === 'BELGIUM' || ct.owner === 'NETHERLANDS')) weight = 0.7;
-                let weightedDist = (isMajorCity(ct.id) ? dist * 1.5 : dist) * weight;
-                if (weightedDist < bestCityDist) { targetCity = ct; bestCityDist = weightedDist; }
+                if (dist > rushScore) continue;
+                let cData = G.cities[ct.id];
+                if (!cData || cData.hp <= 0) continue;
+                let hpRatio = cData.hp / cData.maxHp;
+                if (hpRatio > 0.2) continue;
+                // 检查守军
+                let defenders = 0;
+                for (let e of G.divisions) {
+                    if (e.country === ct.owner && e.strength > 0 && Math.hypot(ct.lon - (e.rx||0), ct.lat - (e.ry||0)) < 1.0) defenders++;
+                }
+                if (defenders > 3) continue;
+                rushTarget = ct; rushScore = dist;
+            }
+            if (rushTarget) {
+                if (typeof aiMoveToTarget === 'function') aiMoveToTarget(d, rushTarget.lon, rushTarget.lat);
+                else { d.state = "moving"; d.targetX = rushTarget.lon; d.targetY = rushTarget.lat; }
+                continue;
             }
         }
 
-        if (targetCity && bestCityDist < 15) {
+        // 1. 攻城：附近有敌方城市
+        let targetCity = null, bestCityScore = 999;
+        if (enemyCities) {
+            let strategy = typeof getStrategy === 'function' ? getStrategy(co) : null;
+            let theaterTargetIds = new Set();
+            if (strategy && strategy.theaterPlans) {
+                for (let tp of strategy.theaterPlans) {
+                    if (tp.targetCities) {
+                        for (let tc of tp.targetCities) { theaterTargetIds.add(tc.id); }
+                    }
+                }
+            }
+            for (let ct of enemyCities) {
+                let dx = Math.abs(d.rx - ct.lon), dy = Math.abs(d.ry - ct.lat);
+                if (dx > 20 || dy > 20) continue;
+                let dist = Math.hypot(dx, dy);
+                let score = dist;
+                if (ct.isCapital) score -= 8;
+                else if (isMajorCity(ct.id)) {
+                    let cf = typeof CITY_FACTORIES !== 'undefined' ? (CITY_FACTORIES[ct.id] || 0) : 0;
+                    score -= 4 + cf * 2;
+                }
+                for (let pid in G.provinceData) {
+                    let pd = G.provinceData[pid];
+                    if (pd.country === co && pd.center && Math.hypot(pd.center[0] - ct.lon, pd.center[1] - ct.lat) < 1.5) {
+                        score -= 2; break;
+                    }
+                }
+                if (theaterTargetIds.has(ct.id)) score -= 5;
+                if (d.type === 'artillery') score -= 3;
+                if (score < bestCityScore) { targetCity = ct; bestCityScore = score; }
+            }
+        }
+
+        if (targetCity && bestCityScore < 20) {
             let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
             d.focusCity = targetCity.id;
             let dx = targetCity.lon - d.rx, dy = targetCity.lat - d.ry;
@@ -665,9 +1057,10 @@ function aiAttackMovement(allCountries) {
             continue;
         }
 
-        // 找一个最近的敌人单位
+        // 2. 交火：附近有敌方单位
         let target = null, bestDist = 999;
         let isAH = co === 'AUSTRIA_HUNGARY';
+        let isFR = co === 'FRANCE';
         for (let e of G.divisions) {
             if (e.country === co || e.strength <= 0) continue;
             if (!atWarWithList.includes(e.country)) continue;
@@ -675,33 +1068,50 @@ function aiAttackMovement(allCountries) {
             if (dx > 10 || dy > 10) continue;
             let dist = Math.hypot(dx, dy);
             if (isAH && e.country === 'RUSSIA') dist *= 0.5;
+            if (isFR) {
+                if (e.country === 'GERMANY') dist *= 0.4;
+                else dist *= 2.0;
+            }
             if (dist < bestDist) { target = e; bestDist = dist; }
         }
-        if (!target) continue;
-
-        let engageRate = defensiveMode ? pers.aggression * 0.3 : pers.aggression * 0.5;
-        if (co === 'FRANCE' || co === 'UK') engageRate = defensiveMode ? 0.2 : 0.3;
-
-        if (bestDist < 6 && Math.random() < engageRate) {
-            let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
-            let desiredDist = ut.range * 0.9;
-            let dx = target.rx - d.rx, dy = target.ry - d.ry;
-            let dist = Math.hypot(dx, dy);
-            let tx = d.rx + (dx / dist) * (dist - desiredDist);
-            let ty = d.ry + (dy / dist) * (dist - desiredDist);
-            if (d.type === 'navy' && typeof isLandPoint === 'function' && isLandPoint(tx, ty)) continue;
-            if (typeof aiMoveToEnemy === 'function') aiMoveToEnemy(d, target);
-            else { d.state = "moving"; d.targetX = tx; d.targetY = ty; }
-        }
-        if (bestDist > 10 && Math.random() < 0.04) {
-            let tx = target.rx, ty = target.ry;
-            if (d.type === 'navy' && typeof isLandPoint === 'function' && isLandPoint(tx, ty)) {
-                let angle = Math.random() * Math.PI * 2;
-                tx = target.rx + Math.cos(angle) * 0.3;
-                ty = target.ry + Math.sin(angle) * 0.3;
+        if (target) {
+            let engageRate = defensiveMode ? pers.aggression * 0.3 : pers.aggression * 0.5;
+            if (co === 'FRANCE' || co === 'UK') engageRate = defensiveMode ? 0.25 : 0.35;
+            if (bestDist < 8 && Math.random() < engageRate) {
+                let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
+                let desiredDist = ut.range * 0.9;
+                let dx = target.rx - d.rx, dy = target.ry - d.ry;
+                let dist = Math.hypot(dx, dy);
+                let tx = d.rx + (dx / dist) * (dist - desiredDist);
+                let ty = d.ry + (dy / dist) * (dist - desiredDist);
+                if (typeof aiMoveToEnemy === 'function') aiMoveToEnemy(d, target);
+                else { d.state = "moving"; d.targetX = tx; d.targetY = ty; }
+                continue;
             }
-            if (typeof aiMoveToTarget === 'function') aiMoveToTarget(d, tx, ty);
-            else { d.state = "moving"; d.targetX = tx; d.targetY = ty; }
+            if (bestDist > 10 && Math.random() < 0.04) {
+                let tx = target.rx, ty = target.ry;
+                if (typeof aiMoveToTarget === 'function') aiMoveToTarget(d, tx, ty);
+                else { d.state = "moving"; d.targetX = tx; d.targetY = ty; }
+                continue;
+            }
+        }
+
+        // 3. 进军：无目标时向敌方边境/战区目标前进
+        let frontTargets = frontTargetCache[co];
+        if (frontTargets && frontTargets.length > 0) {
+            let bestFront = null, bestFrontDist = 999;
+            for (let ft of frontTargets) {
+                let dx = Math.abs(d.rx - ft.lon), dy = Math.abs(d.ry - ft.lat);
+                if (dx > 50 || dy > 50) continue;
+                let dist = Math.hypot(dx, dy);
+                if (dist < bestFrontDist) { bestFront = ft; bestFrontDist = dist; }
+            }
+            if (bestFront) {
+                let tx = bestFront.lon + (Math.random() - 0.5) * 0.5;
+                let ty = bestFront.lat + (Math.random() - 0.5) * 0.5;
+                if (typeof aiMoveToTarget === 'function') aiMoveToTarget(d, tx, ty);
+                else { d.state = "moving"; d.targetX = tx; d.targetY = ty; }
+            }
         }
     }
 }
@@ -710,15 +1120,30 @@ function aiAttackMovement(allCountries) {
 function aiPeaceSeeking(allCountries) {
     for (let co of allCountries) {
         if (!isCountryAtWar(co)) continue;
-        if (G.surrendered[co] || isGreatPower(co)) continue;
+        if (G.surrendered[co]) continue;
+        let cd = G.countries[co];
         let enemies = getEnemiesOf(co);
+        let isGP = isGreatPower(co);
         for (let enemy of enemies) {
             let wsDiff = getWarScoreDiff(co, enemy);
             let myCount = G.divisions.filter(d => d.country === co && d.strength > 0).length;
-            if (wsDiff < -50 && myCount < 5 && Math.random() < 0.15) {
-                let reparations = Math.min(Math.floor(Math.abs(wsDiff) * 1.5), Math.floor((G.countries[co]?.treasury || 0) * 0.5));
+            let warDur = typeof getWarDuration === 'function' ? getWarDuration(co) : 0;
+
+            if (!isGP && wsDiff < -50 && myCount < 5 && Math.random() < 0.15) {
+                let reparations = Math.min(Math.floor(Math.abs(wsDiff) * 1.5), Math.floor((cd?.treasury || 0) * 0.5));
                 makePeace(co, enemy, reparations);
                 addGameLog((COUNTRY_CN[co] || co) + "因战况不利向" + (COUNTRY_CN[enemy] || enemy) + "求和并支付赔款");
+            }
+
+            if (isGP && wsDiff < -80 && myCount < 3 && Math.random() < 0.1) {
+                let reparations = Math.min(Math.floor(Math.abs(wsDiff) * 1.0), Math.floor((cd?.treasury || 0) * 0.3));
+                makePeace(co, enemy, reparations);
+                addGameLog((COUNTRY_CN[co] || co) + "因战况极度不利向" + (COUNTRY_CN[enemy] || enemy) + "求和");
+            }
+            if (isGP && warDur > 365 && wsDiff < -30 && myCount < Math.max(10, Math.ceil((cd?.divCount || myCount) * 0.3)) && Math.random() < 0.05) {
+                let reparations = Math.min(Math.floor(Math.abs(wsDiff) * 0.8), Math.floor((cd?.treasury || 0) * 0.2));
+                makePeace(co, enemy, reparations);
+                addGameLog((COUNTRY_CN[co] || co) + "因长期战争向" + (COUNTRY_CN[enemy] || enemy) + "求和");
             }
         }
     }

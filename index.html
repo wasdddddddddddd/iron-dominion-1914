@@ -4,41 +4,145 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>铁与权柄：1914 · 省份地图</title>
+    <link rel="stylesheet" href="ui/theme.css">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; -webkit-user-select: none; }
-        html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0f1a; cursor: default; touch-action: none; -ms-touch-action: none; overscroll-behavior: none; }
+        html, body { width: 100%; height: 100%; overflow: hidden; background: #0a0805; cursor: default; touch-action: none; -ms-touch-action: none; overscroll-behavior: none; }
         canvas { display: block; width: 100%; height: 100%; }
         #loading {
             position: fixed; top: 0; left: 0; right: 0; bottom: 0;
             display: flex; align-items: center; justify-content: center;
-            background: #05080d; color: #fff; font-size: 18px;
-            font-family: "Georgia", serif; z-index: 100;
+            background: #0a0805; color: #e8d8b0; font-size: 18px;
+            font-family: "Georgia", serif; z-index: 400;
             transition: opacity 0.6s; pointer-events: none;
         }
         #loading.hidden { opacity: 0; }
         #loadingTitle {
-            font-size: 42px; color: #e8d8b0; letter-spacing: 6px;
+            font-size: 48px; color: #e8d080; letter-spacing: 8px;
             margin-bottom: 6px;
+            text-shadow: 0 0 30px rgba(232,168,32,0.4);
         }
         #loadingSub {
-            font-size: 14px; color: rgba(255,255,255,0.3); margin-bottom: 50px;
-            letter-spacing: 3px;
+            font-size: 14px; color: rgba(232,168,32,0.4); margin-bottom: 50px;
+            letter-spacing: 6px;
         }
         #loadingBar {
-            width: 540px; height: 18px; background: #3a3030;
-            border-radius: 9px; margin: 0 auto; overflow: hidden;
-            border: 3px solid #e8a820;
-            box-shadow: 0 0 30px rgba(232,168,32,0.5), inset 0 0 10px rgba(0,0,0,0.5);
+            width: min(620px, 75vw); height: 6px; background: #1a0e04;
+            border-radius: 3px; margin: 0 auto; overflow: hidden;
+            border: 1px solid rgba(200,168,48,0.3);
+            box-shadow: 0 0 20px rgba(200,168,48,0.15), inset 0 1px 3px rgba(0,0,0,0.5);
         }
         #loadingBarFill {
-            width: 0%; height: 100%; background: linear-gradient(90deg, #ccc, #f0f0f0, #fff);
-            border-radius: 7px; transition: width 0.3s ease;
-            box-shadow: inset 0 0 20px rgba(255,255,255,0.7);
+            width: 0%; height: 100%;
+            background: linear-gradient(90deg, #b89830, #e8c840, #f8e060, #e8c840, #b89830);
+            background-size: 200% 100%;
+            animation: loadingShimmer 1.5s linear infinite;
+            border-radius: 3px;
+            box-shadow: 0 0 8px rgba(200,168,48,0.4);
+        }
+        @keyframes loadingShimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
         }
         #loadingPercent {
-            font-size: 20px; color: rgba(255,255,255,0.7); margin-top: 16px;
-            font-family: "Georgia", serif; font-weight: bold;
+            font-size: 14px; color: rgba(200,168,48,0.5); margin-top: 12px;
+            font-family: "Georgia", serif; letter-spacing: 2px;
         }
+        /* ─── 联机模式 ─── */
+        #mpConnectPanel, #mpRoomLobby {
+            display: none; flex-direction: column; align-items: center;
+            background: rgba(10,15,26,0.96); color: #e8d8b0;
+            font-family: Georgia, serif; overflow-y: auto; padding: 20px;
+        }
+        #mpConnectPanel { justify-content: center; }
+        #mpRoomLobby { justify-content: flex-start; padding-top: 40px; }
+        .mp-connect-header { text-align: center; margin-bottom: 30px; }
+        .mp-connect-header h2 { font-size: 24px; color: #c8b88a; margin-bottom: 8px; }
+        .mp-status { font-size: 13px; }
+        .mp-status-ok { color: #5a5; } .mp-status-err { color: #a55; }
+        .mp-connect-form, .mp-create-room {
+            display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; justify-content: center;
+        }
+        .mp-connect-form input, .mp-create-room input, .mp-create-room select {
+            background: #1a1f2e; border: 1px solid #3a3a4a; color: #e8d8b0;
+            padding: 8px 12px; border-radius: 4px; font-family: Georgia, serif; font-size: 14px;
+        }
+        .mp-connect-form input { width: 200px; }
+        .mp-create-room input { width: 140px; }
+        .mp-create-room select { width: 80px; }
+        .mp-connect-btns { display: flex; gap: 8px; justify-content: center; }
+        .mp-btn {
+            background: #2a3050; border: 1px solid #4a5080; color: #e8d8b0;
+            padding: 8px 18px; border-radius: 4px; cursor: pointer;
+            font-family: Georgia, serif; font-size: 14px; transition: background 0.2s;
+        }
+        .mp-btn:hover { background: #3a4070; }
+        .mp-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .mp-btn-connect { background: #2a4a30; border-color: #4a8040; }
+        .mp-btn-create { background: #3a3020; border-color: #8a7040; }
+        .mp-btn-start { background: #2a4a30; border-color: #4a8040; font-size: 16px; padding: 10px 30px; }
+        .mp-btn-ready { background: #3a3040; border-color: #6a5080; }
+        .mp-btn-leave { background: #3a2020; border-color: #804040; }
+        .mp-btn-back { background: #202030; border-color: #404050; margin-top: 20px; }
+        .mp-btn-sm { font-size: 11px; padding: 4px 10px; background: #2a3050; border: 1px solid #4a5080; color: #e8d8b0; border-radius: 3px; cursor: pointer; }
+        .mp-btn-sm:hover { background: #3a4070; }
+        .mp-btn-danger { background: #3a2020; border-color: #804040; }
+        .mp-btn-danger:hover { background: #502020; }
+        .mp-btn-join { background: #2a4030; border-color: #4a8050; }
+        .mp-btn-join:hover { background: #3a6040; }
+        .mp-room-list { max-width: 500px; width: 95vw; }
+        .mp-room-list-title { font-size: 13px; color: rgba(255,255,255,0.4); margin-bottom: 8px; text-align: center; }
+        .mp-room-list-empty { text-align: center; color: rgba(255,255,255,0.2); padding: 20px; }
+        .mp-room-item {
+            display: flex; align-items: center; gap: 12px; padding: 10px 14px;
+            background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 4px; margin-bottom: 6px; cursor: pointer; transition: background 0.2s;
+        }
+        .mp-room-item:hover { background: rgba(255,255,255,0.08); }
+        .mp-room-name { flex: 1; font-size: 14px; }
+        .mp-room-info { color: rgba(255,255,255,0.5); font-size: 12px; }
+        .mp-room-code { color: #8a7040; font-size: 12px; font-family: monospace; }
+        .mp-lobby-header { text-align: center; margin-bottom: 20px; }
+        .mp-lobby-title { font-size: 22px; color: #c8b88a; display: block; }
+        .mp-lobby-code { font-size: 13px; color: rgba(255,255,255,0.4); font-family: monospace; }
+        .mp-seats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; max-width: 700px; width: 95vw; margin-bottom: 20px; }
+        .mp-seat {
+            background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 6px; padding: 12px; text-align: center;
+        }
+        .mp-seat-me { border-color: #c8a830; background: rgba(200,168,48,0.08); }
+        .mp-seat-ai { border-color: #5a5a8a; background: rgba(80,80,140,0.08); }
+        .mp-seat-empty { border-style: dashed; opacity: 0.5; }
+        .mp-seat-num { font-size: 11px; color: rgba(255,255,255,0.3); }
+        .mp-seat-tag { font-size: 11px; color: rgba(255,255,255,0.5); margin: 4px 0; }
+        .mp-seat-name { font-size: 14px; font-weight: bold; margin-bottom: 6px; }
+        .mp-seat-country { font-size: 13px; margin-bottom: 6px; }
+        .mp-seat-ready { font-size: 16px; margin-top: 4px; }
+        .mp-seat-wait { color: rgba(255,255,255,0.2); font-size: 12px; padding: 16px 0; }
+        .mp-country-select {
+            background: #1a1f2e; border: 1px solid #3a3a4a; color: #e8d8b0;
+            padding: 4px 8px; border-radius: 3px; font-size: 12px; width: 100%; margin-bottom: 6px;
+        }
+        .mp-lobby-actions { display: flex; gap: 10px; margin-bottom: 20px; flex-wrap: wrap; justify-content: center; }
+        .mp-chat-area { max-width: 500px; width: 95vw; }
+        .mp-chat-msgs {
+            background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 4px; height: 120px; overflow-y: auto; padding: 8px; margin-bottom: 6px;
+        }
+        .mp-chat-msg { font-size: 12px; padding: 2px 0; }
+        .mp-chat-msg b { color: #c8a830; }
+        .mp-chat-input { display: flex; gap: 6px; }
+        .mp-chat-input input {
+            flex: 1; background: #1a1f2e; border: 1px solid #3a3a4a; color: #e8d8b0;
+            padding: 6px 10px; border-radius: 3px; font-size: 13px;
+        }
+        .mp-mode-btn {
+            display: inline-block; margin: 0 6px; padding: 10px 28px;
+            background: #2a3050; border: 1px solid #4a5080; color: #e8d8b0;
+            border-radius: 6px; cursor: pointer; font-family: Georgia, serif;
+            font-size: 16px; transition: background 0.2s; margin-top: 8px;
+        }
+        .mp-mode-btn:hover { background: #3a4070; }
     </style>
 </head>
 <body oncontextmenu="return false;" style="overscroll-behavior:none;user-select:none;-webkit-user-select:none;">
@@ -52,13 +156,23 @@
     </div>
 </div>
 
-<div id="countrySelect" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(10,15,26,0.96);z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#e8d8b0;font-family:Georgia,serif;overflow-y:auto;padding:20px;">
-    <h1 style="font-size:clamp(22px,5vw,32px);margin-bottom:8px;color:#c8b88a;text-align:center;">铁与权柄：1914</h1>
-    <p style="font-size:clamp(12px,2vw,14px);margin-bottom:24px;color:rgba(255,255,255,0.4);text-align:center;">选择你的国家</p>
+<div id="countrySelect" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(8,5,3,0.97);z-index:200;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#d4c0a0;font-family:Georgia,serif;overflow-y:auto;padding:20px;">
+    <div class="ui-ornament-top" style="width:220px;height:2px;background:linear-gradient(90deg,transparent,rgba(200,168,48,0.35),transparent);margin-bottom:24px;position:relative;"></div>
+    <h1 style="font-size:clamp(22px,5vw,34px);margin-bottom:4px;color:#e8d080;text-align:center;letter-spacing:5px;text-shadow:0 0 30px rgba(200,168,48,0.2),0 2px 4px rgba(0,0,0,0.5);">铁与权柄：1914</h1>
+    <p style="font-size:clamp(11px,2vw,13px);margin-bottom:28px;color:rgba(200,168,48,0.32);text-align:center;letter-spacing:3px;">— 选择你的国家 —</p>
     <div id="countryList" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;max-width:700px;width:95vw;">
     </div>
-    <p style="margin-top:20px;font-size:clamp(10px,1.5vw,12px);color:rgba(255,255,255,0.2);text-align:center;">点击选择国家 · 长按或右键查看详情</p>
+    <div class="ui-ornament-bottom" style="width:220px;height:1px;background:linear-gradient(90deg,transparent,rgba(200,168,48,0.18),transparent);margin-top:24px;"></div>
+    <p style="margin-top:20px;font-size:clamp(10px,1.5vw,11px);color:rgba(200,168,48,0.18);text-align:center;letter-spacing:1px;">点击选择国家 · 长按或右键查看详情</p>
+    <div style="margin-top:14px;text-align:center;">
+        <button class="mp-mode-btn" onclick="MP.showConnectionPanel()" title="加入或创建联机房间">✦ 联机模式</button>
+    </div>
+    
 </div>
+
+<!-- 联机模式面板 -->
+<div id="mpConnectPanel" style="position:fixed;top:0;left:0;right:0;bottom:0;z-index:300;display:none;flex-direction:column;align-items:center;justify-content:center;background:rgba(8,5,3,0.97);color:#d4c0a0;font-family:Georgia,serif;overflow-y:auto;padding:20px;"></div>
+<div id="mpRoomLobby" style="position:fixed;top:0;left:0;right:0;bottom:0;z-index:300;display:none;flex-direction:column;align-items:center;justify-content:flex-start;background:rgba(8,5,3,0.97);color:#d4c0a0;font-family:Georgia,serif;overflow-y:auto;padding:40px 20px 20px 20px;"></div>
 
 <script src="js/config.js" defer></script>
 <script src="js/data_provinces.js" defer></script>
@@ -69,48 +183,124 @@
 <script src="js/game_ui.js" defer></script>
 <script src="js/data_events.js" defer></script>
 <script src="js/game_state.js" defer></script>
+<script src="js/command/commanderData.js" defer></script>
+<script src="js/command/commanderState.js" defer></script>
+<script src="js/command/commanderSystem.js" defer></script>
 <script src="js/navy/shipGrades.js" defer></script>
 <script src="js/navy/shipData.js" defer></script>
 <script src="js/navy/shipNaming.js" defer></script>
 <script src="js/navy/navyNode.js" defer></script>
 <script src="js/navy/shipProductionUI.js" defer></script>
 <script src="js/game_panels.js" defer></script>
+<script src="js/command/commanderUI.js" defer></script>
 <script src="js/tactical.js" defer></script>
 <script src="js/game_core.js" defer></script>
 <script src="js/ai/ai_pathfinding.js" defer></script>
+<script src="js/ai/ai_strategy.js" defer></script>
+<script src="js/ai/ai_tactics.js" defer></script>
 <script src="js/ai/ai_controller.js" defer></script>
 <script src="js/game_init.js" defer></script>
+<script src="js/multiplayer.js" defer></script>
+<script src="ui/theme.js" defer></script>
+<script src="ui/canvas_theme.js" defer></script>
 <script src="mobile.js" defer></script>
 
 <script>
 (function() {
     var scripts = document.querySelectorAll('script[defer]');
     var total = scripts.length;
-    var loaded = 0;
     var bar = document.getElementById('loadingBarFill');
     var pct = document.getElementById('loadingPercent');
-    if (!bar || !pct || total === 0) return;
+    if (!bar || !pct || total === 0) { return; }
 
-    function tick() {
-        loaded++;
-        var v = Math.round(loaded / total * 100);
+    var counted = new Set();
+    var allScriptsDone = false;
+    var pageReady = false;
+
+    // 平滑动画：显示进度向目标进度渐进
+    var displayProgress = 0;
+    var targetProgress = 0;
+    var animId = null;
+
+    function setDisplay(v) {
+        displayProgress = v;
         bar.style.width = v + '%';
-        pct.textContent = v + '%';
-        if (loaded >= total) {
-            setTimeout(function() {
-                document.getElementById('loading').classList.add('hidden');
-            }, 400);
+        pct.textContent = Math.round(v) + '%';
+    }
+
+    function animLoop() {
+        // 向目标进度靠拢，速度递减，越接近越慢
+        var diff = targetProgress - displayProgress;
+        if (Math.abs(diff) < 0.15) {
+            setDisplay(targetProgress);
+            animId = null;
+            // 如果目标已达 100 且动画结束，隐藏加载画面
+            if (targetProgress >= 100 && pageReady) {
+                setTimeout(function() {
+                    var el = document.getElementById('loading');
+                    if (el) el.classList.add('hidden');
+                }, 150);
+            }
+            return;
+        }
+        // 缓动步进：剩余差距的 12%，最小 0.08
+        var step = Math.max(Math.abs(diff) * 0.12, 0.08);
+        setDisplay(displayProgress + (diff > 0 ? step : -step));
+        animId = requestAnimationFrame(animLoop);
+    }
+
+    function setTarget(v) {
+        targetProgress = Math.min(v, 100);
+        if (!animId) {
+            animId = requestAnimationFrame(animLoop);
         }
     }
 
-    for (var i = 0; i < scripts.length; i++) {
-        scripts[i].addEventListener('load', tick);
-        scripts[i].addEventListener('error', tick);
+    function finish() {
+        pageReady = true;
+        setTarget(100);
     }
+
+    function tick(script) {
+        if (counted.has(script)) return;
+        counted.add(script);
+        // 脚本最多推到 90%，剩余 10% 留给 window.load
+        var v = Math.round(counted.size / total * 90);
+        setTarget(v);
+        if (counted.size >= total) {
+            allScriptsDone = true;
+            setTarget(90);
+        }
+    }
+
+    // 初始显示 5%，让用户看到进度条在动
+    setTarget(5);
+
+    for (var i = 0; i < scripts.length; i++) {
+        var s = scripts[i];
+        if (s.complete || s.readyState === 'complete') tick(s);
+        s.addEventListener('load', function() { tick(this); });
+        s.addEventListener('error', function() { tick(this); });
+    }
+
+    // 页面真正就绪时完成
+    window.addEventListener('load', function() {
+        if (allScriptsDone) {
+            finish();
+        } else {
+            setTarget(95);
+        }
+    });
+
+    // 兜底：8 秒后强制完成
+    setTimeout(function() {
+        var el = document.getElementById('loading');
+        if (el && !el.classList.contains('hidden')) finish();
+    }, 8000);
 })();
 </script>
 
-<div id="errorMsg" style="position:fixed;bottom:10px;left:10px;background:rgba(200,0,0,0.8);color:#fff;padding:8px 12px;font-size:13px;z-index:200;display:none;max-width:80%;font-family:monospace;"></div>
+<div id="errorMsg" style="position:fixed;bottom:10px;left:10px;background:rgba(80,20,20,0.9);color:#f0c0b0;padding:8px 12px;font-size:13px;z-index:200;display:none;max-width:80%;font-family:monospace;border:1px solid rgba(200,80,60,0.4);border-radius:2px;"></div>
 <script>
 window.onerror = function(msg, url, line) {
     var el = document.getElementById("errorMsg");

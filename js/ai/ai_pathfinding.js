@@ -645,7 +645,7 @@ moveUnits = function(days) {
 
     // 6c. 陆军移动（航点跟随 + 入海倒退 + 卡死重算）
     for (let d of G.divisions) {
-        if (d.type === 'navy') continue;
+        if (typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy') continue;
         if (d.state !== 'moving' || d.targetX === null) continue;
         if (d.rx === undefined) continue;
 
@@ -753,9 +753,9 @@ moveUnits = function(days) {
         d._prevX = d.rx; d._prevY = d.ry;
     }
 
-    // 6c2. 海军移动（结构与陆军对称，但水/陆逻辑相反）
+    // 6c2. 海军/潜艇移动（结构与陆军对称，但水/陆逻辑相反）
     for (let d of G.divisions) {
-        if (d.type !== 'navy') continue;
+        if (typeof isSeaType === 'function' ? !isSeaType(d.type) : d.type !== 'navy') continue;
         if (d.state !== 'moving' || d.targetX === null) continue;
         if (d.rx === undefined) continue;
 
@@ -839,7 +839,7 @@ moveUnits = function(days) {
     }
 
     // 6c3. 一字阵型（原版在 _origMoveUnits 内，但 6b 恢复了位置，在此重做）
-    let formDivs = G.divisions.filter(d => d.formation === 'line' && d.type === 'navy');
+    let formDivs = G.divisions.filter(d => d.formation === 'line' && (typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy'));
     if (formDivs.length > 1) {
         let groups = {};
         for (let d of formDivs) {
@@ -883,7 +883,7 @@ moveUnits = function(days) {
                     if (dist > 0.001) {
                         let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
                         let spd = ut.speed * ed * 2.5;
-                        if (d.type === 'navy' && d.navySpd !== undefined) spd = d.navySpd * ed * 2.5;
+                        if ((typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy') && d.navySpd !== undefined) spd = d.navySpd * ed * 2.5;
                         spd *= 2;
                         if (dist > spd) { d.rx += (dx / dist) * spd; d.ry += (dy / dist) * spd; }
                         else { d.rx = targetX; d.ry = targetY; }
@@ -918,7 +918,7 @@ moveUnits = function(days) {
         if (d.state !== 'moving' || d.targetX === null) continue;
         if (d.path && d.path.length > 0) continue;
         if (d.rx === undefined) continue;
-        let isNavy = d.type === 'navy';
+        let isNavy = typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy';
         let stuck = (d._stuck || 0) >= STUCK_FRAMES;
         let needPath = !d.path || d.path.length === 0;
         if (stuck || needPath) {
@@ -1000,7 +1000,7 @@ moveUnits = function(days) {
 // ===== 7. 外部接口 =====
 function assignPath(div, wx, wy) {
     if (!div || div.strength <= 0) return;
-    if (div.type === 'navy') {
+    if (typeof isSeaType === 'function' ? isSeaType(div.type) : div.type === 'navy') {
         if (!_onNavyGrid(wx, wy)) {
             let nw = nearestWater(wx, wy);
             if (!nw) { div.state = 'idle'; return; }

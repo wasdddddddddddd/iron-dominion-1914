@@ -1,6 +1,7 @@
 // === 海军节点系统（建造、升级、舰船生产） ===
 
 const GREAT_NAVY_POWERS = ['GERMANY','UK','FRANCE','RUSSIA','AUSTRIA_HUNGARY','ITALY'];
+const SUBMARINE_POWERS = ['GERMANY'];
 
 const NODE_LEVELS = [
     { level: 1, upgradeCost: 0,   upgradeTime: 0,   probs: { T1:0.12, T2:0.22, T3:0.35, T4:0.20, T5:0.08, T6:0.03, T7:0,    T8:0    } },
@@ -42,7 +43,6 @@ function initNavyNodes() {
     if (!G.shipNameCounters) G.shipNameCounters = {};
 
     for (let nb of NAVAL_BASES) {
-        if (!GREAT_NAVY_POWERS.includes(nb.country)) continue;
         let provinceId = findNearestProvince(nb.lon, nb.lat);
         G.navyNodes[nb.id] = {
             id: nb.id,
@@ -55,6 +55,13 @@ function initNavyNodes() {
             upgradeProgress: 0,
             upgradeTimer: 0,
             provinceId: provinceId,
+            attackTimer: 0,
+            healRadius: 0.15,
+            // 节点战斗属性：射速2倍步兵、伤害60、射程1.2倍舰船射程、生命3000
+            hp: 3000,
+            maxHp: 3000,
+            fireCooldown: 0,
+            maxFireCd: 0.5,
         };
     }
 }
@@ -66,7 +73,7 @@ function createShip(nodeId, country, forcedGrade) {
     let cData = G.countries[co];
     if (!cData) return null;
 
-    let gradeKey = forcedGrade || rollShipGrade(node.level);
+    let gradeKey = forcedGrade || rollShipGrade(node ? node.level : 1);
     let grade = SHIP_GRADES[gradeKey];
     let shipName = generateShipName(co, grade.name);
 

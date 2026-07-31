@@ -1,0 +1,12 @@
+{
+  "name": "iron-and-dominion-1914",
+  "version": "1.0.0",
+  "description": "铁与权柄：1914 — 一战大战略游戏",
+  "scripts": {
+    "start": "node server/server.js",
+    "server": "node server/server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

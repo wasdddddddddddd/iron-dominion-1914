@@ -1,0 +1,647 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Iron & Dominion 1914 — 一战沉浸式 UI 主题
+   设计方向：1914年军用地图 · 电报通讯 · 皮革档案 · 战地指挥所
+   配色：羊皮纸暖色 + 黄铜金 + 深棕墨水 + 军绿 + 血锈红
+   纹理：纸纹、微噪点、晕影、做旧边框
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── CSS 自定义属性 ─── */
+:root {
+  /* 纸张色系 */
+  --paper: #f2e4c8;
+  --paper-warm: #e8d8b0;
+  --paper-aged: #d4c4a0;
+  --paper-dark: #b8a478;
+  --paper-shadow: #8a7a5a;
+
+  /* 墨水色系 */
+  --ink: #1a0e04;
+  --ink-deep: #0d0602;
+  --ink-warm: #2a1a0a;
+  --ink-light: #5a4030;
+  --ink-faded: #8a7060;
+
+  /* 黄铜/金 */
+  --brass: #b8a050;
+  --brass-light: #d4c070;
+  --brass-bright: #e8d080;
+  --brass-dark: #8a7030;
+  --brass-deep: #5a4820;
+  --brass-glow: rgba(200,168,48,0.25);
+
+  /* 军色系 */
+  --olive: #5a6a3a;
+  --olive-dark: #3a4a22;
+  --olive-dust: #6a7a4a;
+  --khaki: #8a8a60;
+
+  /* 海军色 */
+  --navy: #1a2530;
+  --navy-light: #2a3545;
+  --navy-deep: #0f1820;
+
+  /* 血/锈色 */
+  --rust: #8a3a2a;
+  --rust-dark: #5a1a0a;
+  --rust-light: #b05040;
+
+  /* 电报色 */
+  --telegram-paper: #e8dcc8;
+  --telegram-ink: #2a1a0a;
+
+  /* 功能色 */
+  --success: #7a9a5a;
+  --success-dim: #4a6a3a;
+  --warning: #b89840;
+  --danger: #b05040;
+  --info: #6a8aaa;
+
+  /* 基础 */
+  --bg-deep: #0a0805;
+  --bg-panel: rgba(22,16,10,0.94);
+  --bg-panel-light: rgba(28,20,14,0.92);
+  --border-subtle: rgba(180,150,110,0.18);
+  --border-medium: rgba(180,150,110,0.3);
+  --border-strong: rgba(200,168,48,0.45);
+  --text-primary: #d4c0a0;
+  --text-secondary: #b0a080;
+  --text-muted: rgba(200,180,150,0.45);
+  --text-dim: rgba(200,180,150,0.25);
+
+  /* 排版 */
+  --font-display: 'Georgia', 'Times New Roman', 'SimSun', serif;
+  --font-body: 'Georgia', 'Times New Roman', 'SimSun', serif;
+  --font-mono: 'Courier New', 'Consolas', 'SimHei', monospace;
+  --font-telegraph: 'Courier New', 'Consolas', monospace;
+
+  /* 间距 */
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
+
+  /* 过渡 */
+  --ease-paper: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-brass: 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   GLOBAL RESET & BASE
+   ═══════════════════════════════════════════════════════════════ */
+*, *::before, *::after {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(180,140,80,0.3) rgba(20,12,5,0.5);
+}
+
+html, body {
+  background: var(--bg-deep) !important;
+  font-family: var(--font-body);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ─── 全局纸纹背景 ─── */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    /* 微噪点纹理 */
+    repeating-conic-gradient(rgba(180,150,110,0.008) 0% 25%, transparent 0% 50%) 0 0 / 3px 3px,
+    /* 纸纤维纹理 */
+    repeating-linear-gradient(0deg, transparent, transparent 1px, rgba(180,150,110,0.012) 1px, rgba(180,150,110,0.012) 2px),
+    repeating-linear-gradient(90deg, transparent, transparent 1px, rgba(180,150,110,0.006) 1px, rgba(180,150,110,0.006) 2px),
+    /* 暖光晕 */
+    radial-gradient(ellipse at 50% 30%, rgba(200,168,48,0.04) 0%, transparent 60%),
+    radial-gradient(ellipse at 80% 80%, rgba(180,140,80,0.02) 0%, transparent 50%);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   SCROLLBAR
+   ═══════════════════════════════════════════════════════════════ */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track {
+  background: rgba(20,12,5,0.5);
+  border-left: 1px solid rgba(180,150,110,0.08);
+}
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(180,140,80,0.25), rgba(180,140,80,0.35));
+  border-radius: 3px;
+  border: 1px solid rgba(200,168,48,0.1);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(200,168,48,0.4), rgba(200,168,48,0.5));
+}
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* ═══════════════════════════════════════════════════════════════
+   SELECTION
+   ═══════════════════════════════════════════════════════════════ */
+::selection {
+  background: rgba(200,168,48,0.25);
+  color: #f0e0c0;
+  text-shadow: 0 0 2px rgba(200,168,48,0.2);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   CANVAS — 后处理效果由 theme.js 的轻量晕影实现，避免 CSS filter 拖慢 GPU
+   ═══════════════════════════════════════════════════════════════ */
+
+/* ═══════════════════════════════════════════════════════════════
+   LOADING SCREEN — 样式由 index.html 内联控制，此处仅做纸张纹理叠加
+   ═══════════════════════════════════════════════════════════════ */
+#loading::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(180,160,120,0.015) 2px, rgba(180,160,120,0.015) 4px),
+    radial-gradient(ellipse at 50% 35%, rgba(200,168,48,0.06) 0%, transparent 65%),
+    radial-gradient(ellipse at 30% 70%, rgba(180,140,80,0.03) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+#loading > div { position: relative; z-index: 1; }
+
+/* ═══════════════════════════════════════════════════════════════
+   COUNTRY SELECTION SCREEN
+   ═══════════════════════════════════════════════════════════════ */
+#countrySelect {
+  background: linear-gradient(180deg, rgba(10,8,5,0.98) 0%, rgba(20,12,6,0.98) 40%, rgba(15,10,6,0.98) 70%, rgba(10,8,5,0.98) 100%) !important;
+}
+#countrySelect::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(180,160,120,0.012) 2px, rgba(180,160,120,0.012) 4px),
+    radial-gradient(ellipse at 50% 25%, rgba(200,168,48,0.04) 0%, transparent 55%),
+    radial-gradient(ellipse at 80% 80%, rgba(180,140,80,0.02) 0%, transparent 40%);
+  pointer-events: none;
+  z-index: 0;
+}
+#countrySelect > * { position: relative; z-index: 1; }
+
+#countrySelect h1 {
+  font-size: 36px !important;
+  color: var(--brass-bright) !important;
+  letter-spacing: 6px !important;
+  text-shadow:
+    0 0 30px rgba(200,168,48,0.25),
+    0 2px 4px rgba(0,0,0,0.5) !important;
+  margin-bottom: 4px !important;
+  font-family: var(--font-display) !important;
+}
+#countrySelect > p:first-of-type {
+  color: rgba(200,168,48,0.35) !important;
+  font-size: 13px !important;
+  letter-spacing: 4px !important;
+  margin-bottom: 28px !important;
+  font-family: var(--font-display) !important;
+}
+
+/* 装饰分隔线 */
+.ui-ornament-top,
+.ui-ornament-bottom {
+  position: relative;
+}
+.ui-ornament-top::after {
+  content: '◆';
+  position: absolute;
+  left: 50%;
+  top: -8px;
+  transform: translateX(-50%);
+  color: rgba(200,168,48,0.3);
+  font-size: 8px;
+}
+
+/* 国家卡片 */
+#countryList {
+  gap: 12px !important;
+  max-width: 780px !important;
+}
+#countryList > div {
+  background: linear-gradient(180deg, rgba(40,28,14,0.55) 0%, rgba(28,18,8,0.65) 100%) !important;
+  border: 1px solid rgba(180,140,80,0.18) !important;
+  border-radius: var(--radius-md) !important;
+  padding: 18px 14px !important;
+  transition: all var(--ease-paper) !important;
+  position: relative;
+  overflow: hidden;
+  cursor: pointer;
+}
+#countryList > div::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 1px, rgba(200,168,48,0.015) 1px, rgba(200,168,48,0.015) 2px);
+  pointer-events: none;
+  z-index: 0;
+}
+#countryList > div > * { position: relative; z-index: 1; }
+
+#countryList > div:hover {
+  background: linear-gradient(180deg, rgba(60,40,18,0.65) 0%, rgba(40,24,10,0.75) 100%) !important;
+  border-color: rgba(200,168,48,0.5) !important;
+  transform: translateY(-2px) !important;
+  box-shadow:
+    0 8px 24px rgba(0,0,0,0.45),
+    0 0 30px rgba(200,168,48,0.08),
+    inset 0 1px 0 rgba(200,168,48,0.06) !important;
+}
+
+#countryList > div > div:first-child {
+  height: 3px !important;
+  margin-bottom: 12px !important;
+  border-radius: 1px !important;
+  opacity: 0.85;
+  box-shadow: 0 0 8px currentColor;
+}
+#countryList > div > div:nth-child(2) {
+  font-size: 17px !important;
+  color: #e0d0b0 !important;
+  letter-spacing: 1px !important;
+  font-family: var(--font-display) !important;
+}
+#countryList > div > div:nth-child(3) {
+  color: rgba(200,180,150,0.5) !important;
+  font-size: 11px !important;
+  margin-top: 8px !important;
+  line-height: 1.5 !important;
+}
+#countryList > div > div:nth-child(4) {
+  color: rgba(200,180,150,0.35) !important;
+  font-size: 11px !important;
+  margin-top: 10px !important;
+  letter-spacing: 1px !important;
+}
+
+/* 选择提示 */
+#countrySelect > p:last-of-type {
+  color: rgba(200,168,48,0.2) !important;
+  font-size: 11px !important;
+  letter-spacing: 2px !important;
+  font-family: var(--font-display) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MULTIPLAYER MODE BUTTON
+   ═══════════════════════════════════════════════════════════════ */
+.mp-mode-btn {
+  background: linear-gradient(180deg, rgba(60,50,25,0.5) 0%, rgba(40,30,15,0.6) 100%) !important;
+  border: 1px solid rgba(180,140,80,0.3) !important;
+  color: var(--brass) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-display) !important;
+  letter-spacing: 2px !important;
+  padding: 10px 32px !important;
+  transition: all var(--ease-brass) !important;
+  text-shadow: 0 0 10px rgba(200,168,48,0.15) !important;
+  cursor: pointer;
+}
+.mp-mode-btn:hover {
+  background: linear-gradient(180deg, rgba(80,60,30,0.6) 0%, rgba(50,35,18,0.7) 100%) !important;
+  border-color: rgba(200,168,48,0.5) !important;
+  box-shadow: 0 0 20px rgba(200,168,48,0.15), 0 4px 12px rgba(0,0,0,0.3) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   MULTIPLAYER PANELS
+   ═══════════════════════════════════════════════════════════════ */
+#mpConnectPanel, #mpRoomLobby {
+  background: linear-gradient(180deg, rgba(10,8,5,0.98) 0%, rgba(20,12,6,0.98) 50%, rgba(10,8,5,0.98) 100%) !important;
+}
+#mpConnectPanel::before, #mpRoomLobby::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(180,160,120,0.01) 2px, rgba(180,160,120,0.01) 4px),
+    radial-gradient(ellipse at 50% 20%, rgba(200,168,48,0.03) 0%, transparent 50%);
+  pointer-events: none;
+  z-index: 0;
+}
+#mpConnectPanel > *, #mpRoomLobby > * { position: relative; z-index: 1; }
+
+/* 电报风格头部 */
+.mp-connect-header h2 {
+  color: var(--brass-bright) !important;
+  letter-spacing: 4px !important;
+  text-shadow: 0 0 20px rgba(200,168,48,0.2) !important;
+  font-family: var(--font-display) !important;
+}
+.mp-connect-header p {
+  font-family: var(--font-telegraph) !important;
+  letter-spacing: 3px !important;
+}
+.mp-status-ok { color: var(--success) !important; }
+.mp-status-err { color: var(--danger) !important; }
+
+/* 输入框 — 电报纸风格 */
+.mp-connect-form input,
+.mp-create-room input,
+.mp-create-room select,
+.mp-chat-input input,
+.mp-country-select {
+  background: rgba(30,20,10,0.7) !important;
+  border: 1px solid rgba(180,140,80,0.2) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-body) !important;
+  transition: all var(--ease-brass) !important;
+  padding: 8px 12px !important;
+}
+.mp-connect-form input:focus,
+.mp-create-room input:focus,
+.mp-chat-input input:focus,
+.mp-country-select:focus {
+  border-color: rgba(200,168,48,0.5) !important;
+  outline: none;
+  box-shadow: 0 0 12px rgba(200,168,48,0.1), inset 0 1px 3px rgba(0,0,0,0.3) !important;
+  background: rgba(40,28,14,0.8) !important;
+}
+
+/* 按钮 — 黄铜风格 */
+.mp-btn, .mp-btn-sm {
+  background: linear-gradient(180deg, rgba(50,40,25,0.6) 0%, rgba(30,22,12,0.7) 100%) !important;
+  border: 1px solid rgba(180,140,80,0.3) !important;
+  color: var(--brass) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-display) !important;
+  letter-spacing: 1px !important;
+  transition: all var(--ease-brass) !important;
+  cursor: pointer;
+}
+.mp-btn:hover, .mp-btn-sm:hover {
+  background: linear-gradient(180deg, rgba(70,55,35,0.7) 0%, rgba(40,28,15,0.8) 100%) !important;
+  border-color: rgba(200,168,48,0.5) !important;
+  box-shadow: 0 0 14px rgba(200,168,48,0.1) !important;
+}
+.mp-btn:disabled {
+  opacity: 0.3 !important;
+  filter: grayscale(0.5);
+  cursor: not-allowed;
+}
+
+/* 按钮颜色变体 */
+.mp-btn-connect {
+  background: linear-gradient(180deg, rgba(40,50,30,0.6) 0%, rgba(25,30,15,0.7) 100%) !important;
+  border-color: rgba(120,160,90,0.4) !important;
+  color: #a0c080 !important;
+}
+.mp-btn-connect:hover { border-color: rgba(160,200,120,0.6) !important; box-shadow: 0 0 14px rgba(120,160,90,0.1) !important; }
+
+.mp-btn-create {
+  background: linear-gradient(180deg, rgba(60,45,20,0.6) 0%, rgba(35,25,10,0.7) 100%) !important;
+  border-color: rgba(200,150,60,0.4) !important;
+  color: #d4b060 !important;
+}
+.mp-btn-create:hover { border-color: rgba(220,180,80,0.6) !important; box-shadow: 0 0 14px rgba(200,150,60,0.12) !important; }
+
+.mp-btn-start {
+  background: linear-gradient(180deg, rgba(40,55,30,0.6) 0%, rgba(25,35,15,0.7) 100%) !important;
+  border-color: rgba(120,160,90,0.4) !important;
+  font-size: 17px !important;
+  letter-spacing: 3px !important;
+  color: #a0c080 !important;
+}
+.mp-btn-start:hover { border-color: rgba(160,200,120,0.6) !important; box-shadow: 0 0 20px rgba(120,160,90,0.12) !important; }
+
+.mp-btn-ready {
+  background: linear-gradient(180deg, rgba(50,40,55,0.6) 0%, rgba(30,25,35,0.7) 100%) !important;
+  border-color: rgba(140,100,160,0.4) !important;
+  color: #b0a0c0 !important;
+}
+.mp-btn-ready:hover { border-color: rgba(160,120,180,0.6) !important; }
+
+.mp-btn-leave {
+  background: linear-gradient(180deg, rgba(50,25,25,0.6) 0%, rgba(30,15,15,0.7) 100%) !important;
+  border-color: rgba(160,70,70,0.4) !important;
+  color: #c08080 !important;
+}
+.mp-btn-leave:hover { border-color: rgba(200,80,80,0.6) !important; }
+
+.mp-btn-back {
+  background: linear-gradient(180deg, rgba(30,30,35,0.6) 0%, rgba(20,20,25,0.7) 100%) !important;
+  border-color: rgba(100,100,120,0.4) !important;
+  color: #a0a0b0 !important;
+}
+.mp-btn-back:hover { border-color: rgba(130,130,150,0.6) !important; }
+
+.mp-btn-join {
+  background: linear-gradient(180deg, rgba(35,50,35,0.6) 0%, rgba(20,30,20,0.7) 100%) !important;
+  border-color: rgba(100,140,90,0.4) !important;
+  color: #90b080 !important;
+}
+.mp-btn-join:hover { border-color: rgba(140,180,120,0.6) !important; box-shadow: 0 0 14px rgba(100,140,90,0.1) !important; }
+
+.mp-btn-danger {
+  background: linear-gradient(180deg, rgba(50,20,20,0.6) 0%, rgba(30,12,12,0.7) 100%) !important;
+  border-color: rgba(160,60,60,0.4) !important;
+  color: #c08080 !important;
+}
+.mp-btn-danger:hover { border-color: rgba(200,80,80,0.6) !important; box-shadow: 0 0 14px rgba(160,60,60,0.1) !important; }
+
+/* 房间列表 */
+.mp-room-list-title {
+  color: var(--text-muted) !important;
+  letter-spacing: 2px !important;
+  font-family: var(--font-display) !important;
+}
+.mp-room-list-empty {
+  color: var(--text-dim) !important;
+  font-family: var(--font-display) !important;
+  font-style: italic;
+}
+.mp-room-item {
+  background: linear-gradient(180deg, rgba(35,25,15,0.5) 0%, rgba(25,18,10,0.6) 100%) !important;
+  border: 1px solid rgba(180,140,80,0.15) !important;
+  border-radius: var(--radius-sm) !important;
+  transition: all var(--ease-brass) !important;
+  cursor: pointer;
+}
+.mp-room-item:hover {
+  background: linear-gradient(180deg, rgba(50,35,20,0.6) 0%, rgba(35,22,12,0.7) 100%) !important;
+  border-color: rgba(200,168,48,0.35) !important;
+  box-shadow: 0 0 12px rgba(200,168,48,0.05) !important;
+}
+.mp-room-name { color: var(--text-primary) !important; font-family: var(--font-display) !important; }
+.mp-room-info { color: var(--text-muted) !important; }
+.mp-room-code { color: var(--brass-dark) !important; font-family: var(--font-telegraph) !important; }
+
+/* 房间大厅 */
+.mp-lobby-title {
+  color: var(--brass-bright) !important;
+  letter-spacing: 3px !important;
+  text-shadow: 0 0 15px rgba(200,168,48,0.2) !important;
+  font-family: var(--font-display) !important;
+}
+.mp-lobby-code {
+  color: var(--text-muted) !important;
+  font-family: var(--font-telegraph) !important;
+}
+.mp-seat {
+  background: linear-gradient(180deg, rgba(35,25,15,0.5) 0%, rgba(25,18,10,0.6) 100%) !important;
+  border: 1px solid rgba(180,140,80,0.2) !important;
+  border-radius: var(--radius-md) !important;
+  transition: all var(--ease-brass) !important;
+}
+.mp-seat-me {
+  border-color: rgba(200,168,48,0.5) !important;
+  background: linear-gradient(180deg, rgba(50,40,20,0.55) 0%, rgba(35,25,12,0.65) 100%) !important;
+  box-shadow: 0 0 16px rgba(200,168,48,0.1), inset 0 1px 0 rgba(200,168,48,0.05) !important;
+}
+.mp-seat-ai {
+  border-color: rgba(120,100,160,0.3) !important;
+  background: linear-gradient(180deg, rgba(35,30,50,0.5) 0%, rgba(25,20,35,0.6) 100%) !important;
+}
+.mp-seat-empty {
+  border-style: dashed !important;
+  border-color: rgba(180,140,80,0.1) !important;
+  opacity: 0.4;
+}
+.mp-seat-num { color: var(--text-dim) !important; }
+.mp-seat-tag { color: var(--text-muted) !important; }
+.mp-seat-name {
+  color: var(--text-primary) !important;
+  font-weight: normal !important;
+  letter-spacing: 1px !important;
+  font-family: var(--font-display) !important;
+}
+.mp-seat-wait { color: var(--text-dim) !important; }
+
+/* 聊天 — 电报风格 */
+.mp-chat-msgs {
+  background: rgba(20,12,5,0.5) !important;
+  border: 1px solid rgba(180,140,80,0.15) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-telegraph) !important;
+}
+.mp-chat-msg { color: #c8b898 !important; font-family: var(--font-telegraph) !important; }
+.mp-chat-msg b { color: var(--brass) !important; }
+
+/* ═══════════════════════════════════════════════════════════════
+   TOAST NOTIFICATIONS
+   ═══════════════════════════════════════════════════════════════ */
+#mpToast {
+  background: rgba(30,20,10,0.94) !important;
+  border: 1px solid rgba(200,168,48,0.4) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-display) !important;
+  letter-spacing: 1px !important;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5), 0 0 20px rgba(200,168,48,0.05) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   TUTORIAL OVERLAY
+   ═══════════════════════════════════════════════════════════════ */
+#tutorialOverlay {
+  background: rgba(5,3,0,0.92) !important;
+}
+#tutorialOverlay > div {
+  background: linear-gradient(180deg, rgba(30,22,12,0.98) 0%, rgba(20,14,8,0.98) 100%) !important;
+  border: 2px solid rgba(180,140,80,0.3) !important;
+  border-radius: var(--radius-lg) !important;
+  color: var(--text-primary) !important;
+  box-shadow:
+    0 0 50px rgba(0,0,0,0.6),
+    0 0 80px rgba(200,168,48,0.04),
+    inset 0 0 60px rgba(200,168,48,0.03) !important;
+}
+#tutorialOverlay > div > div:first-child {
+  color: var(--brass-bright) !important;
+  letter-spacing: 4px !important;
+  font-size: 26px !important;
+  font-family: var(--font-display) !important;
+}
+#tutorialOverlay button,
+#tutorialOverlay [onclick] {
+  background: linear-gradient(180deg, rgba(60,50,25,0.5) 0%, rgba(40,30,15,0.6) 100%) !important;
+  border: 1px solid rgba(200,168,48,0.4) !important;
+  color: var(--brass) !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-display) !important;
+  letter-spacing: 2px !important;
+  cursor: pointer;
+  transition: all var(--ease-brass) !important;
+}
+#tutorialOverlay button:hover,
+#tutorialOverlay [onclick]:hover {
+  background: linear-gradient(180deg, rgba(80,60,30,0.6) 0%, rgba(50,35,18,0.7) 100%) !important;
+  border-color: rgba(200,168,48,0.6) !important;
+  box-shadow: 0 0 16px rgba(200,168,48,0.12) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ERROR MESSAGE
+   ═══════════════════════════════════════════════════════════════ */
+#errorMsg {
+  background: rgba(80,20,20,0.9) !important;
+  border: 1px solid rgba(200,80,60,0.5) !important;
+  color: #f0c0b0 !important;
+  border-radius: var(--radius-sm) !important;
+  font-family: var(--font-mono) !important;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   FOCUS STYLES
+   ═══════════════════════════════════════════════════════════════ */
+*:focus-visible {
+  outline: 2px solid rgba(200,168,48,0.5);
+  outline-offset: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   ANIMATIONS
+   ═══════════════════════════════════════════════════════════════ */
+@keyframes brassPulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(200,168,48,0.1); }
+  50% { box-shadow: 0 0 16px rgba(200,168,48,0.2); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes paperReveal {
+  from { opacity: 0; filter: brightness(0.5); }
+  to { opacity: 1; filter: brightness(1); }
+}
+
+/* 应用于面板出现 */
+#mpConnectPanel[style*="display: flex"],
+#mpRoomLobby[style*="display: flex"],
+#tutorialOverlay {
+  animation: paperReveal 0.4s var(--ease-paper);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   RESPONSIVE: MOBILE
+   ═══════════════════════════════════════════════════════════════ */
+@media (max-width: 768px) {
+  #loadingTitle { font-size: 32px !important; letter-spacing: 4px !important; }
+  #loadingSub { font-size: 11px !important; letter-spacing: 3px !important; }
+  #countrySelect h1 { font-size: 24px !important; letter-spacing: 3px !important; }
+  #countryList { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)) !important; gap: 8px !important; }
+  #countryList > div { padding: 14px 10px !important; }
+  #countryList > div > div:nth-child(2) { font-size: 14px !important; }
+  .mp-btn { padding: 8px 14px !important; font-size: 12px !important; }
+  .mp-btn-start { font-size: 15px !important; padding: 10px 24px !important; }
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   REDUCED MOTION
+   ═══════════════════════════════════════════════════════════════ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

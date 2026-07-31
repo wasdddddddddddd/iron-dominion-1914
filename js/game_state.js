@@ -2,17 +2,21 @@
 
 let G = {
     date: new Date(1914, 6, 26),
-    speed: 1,
-    paused: false,
+    speed: 4,
+    paused: true,
     playerCountry: null,
     tick: 0,
     countries: {},
     divisions: [],
     projectiles: [],
     divIdCounter: 1,
+    unitCounters: {},
     selectedProvince: null,
     selectedDivision: null,
     selectedDivisions: [],
+    selectedCities: [],
+    selectedNavyNodeOnMap: false,
+    commanderState: null,
     selBox: null,
     provinceOwners: {},
     provinceData: {},
@@ -67,6 +71,9 @@ let G = {
     shipIdCounter: 1,
     shipNameCounters: {},
     fireZones: [],
+    multiplayerMode: null, // 'host' | 'client' | null
+    multiplayerSeats: [],  // 联机席位列表
+    multiplayerHumanCountries: [], // 人类玩家控制的国家列表
 };
 // bbox: { minX, maxX, minY, maxY } for each province (precomputed)
 let PROVINCE_BBOX = {};
@@ -77,16 +84,17 @@ const POPULATION = {"GERMANY":67,"FRANCE":39,"UK":52,"ITALY":35,"AUSTRIA_HUNGARY
 // Manpower consumed per unit type (thousands of men)
 const MANPOWER_COST = {
     infantry: 15, engineer: 12, cavalry: 10, artillery: 8,
-    navy: 5,
+    navy: 5, submarine: 3,
 };
 
 // Unit type configs — COSTS BALANCED (higher costs, lower income)
 const UNIT_TYPES = {
-    infantry: { cost:50, range:0.12, fireRate:1, damage:14, speed:0.0432, maxStr:100, bulletSpeed:1.4, sym:"🪖", label:"步兵", desc:"基准，全能主力", manpower:15 },
-    engineer: { cost:70, range:0.084, fireRate:1.25, damage:8.4, speed:0.0389, maxStr:110, bulletSpeed:1.12, sym:"🛠️", label:"工兵", desc:"工程/攻城", manpower:12 },
-    cavalry:  { cost:80, range:0.072, fireRate:1.43, damage:11.2, speed:0.0648, maxStr:90, bulletSpeed:1.26, sym:"🏇", label:"骑兵", desc:"高速机动/包抄", manpower:10 },
-    artillery:{ cost:120, range:0.45, fireRate:5, damage:35, speed:0.0259, maxStr:70, bulletSpeed:2.52, sym:"💥", label:"炮兵", desc:"远程火力压制", manpower:8 },
-    navy:     { cost:500, range:1.2, fireRate:1.5, damage:80, speed:0.0675, maxStr:500, bulletSpeed:12, sym:"🚢", label:"海军", desc:"巨舰大炮", manpower:5 },
+    infantry: { cost:50, range:0.204, fireRate:1, damage:14, speed:0.0432, maxStr:100, bulletSpeed:1.4, sym:"🪖", label:"步兵", desc:"基准，全能主力", manpower:15 },
+    engineer: { cost:70, range:0.1428, fireRate:1.25, damage:8.4, speed:0.0389, maxStr:110, bulletSpeed:1.12, sym:"🛠️", label:"工兵", desc:"工程/攻城", manpower:12 },
+    cavalry:  { cost:80, range:0.1224, fireRate:1.43, damage:11.2, speed:0.0648, maxStr:90, bulletSpeed:1.26, sym:"🏇", label:"骑兵", desc:"高速机动/包抄", manpower:10 },
+    artillery:{ cost:120, range:0.675, fireRate:5, damage:35, speed:0.0259, maxStr:70, bulletSpeed:2.52, sym:"💥", label:"炮兵", desc:"远程火力压制", manpower:8 },
+    navy:     { cost:500, range:0.816, fireRate:1.5, damage:80, speed:0.0675, maxStr:500, bulletSpeed:12, sym:"🚢", label:"海军", desc:"巨舰大炮", manpower:5 },
+    submarine:{ cost:350, range:0.9, fireRate:3, damage:55, speed:0.04, maxStr:200, bulletSpeed:10, sym:"🐬", label:"潜艇", desc:"水下伏击，幽灵猎手", manpower:3 },
 };
 
 function initProvinceData() {
@@ -236,6 +244,10 @@ function initCountries() {
         let pop = (POPULATION[c] || 1) * 1000; // convert to thousands
         G.countries[c] = { ...d, name: c, income: 0, expenses: 0, divCount: 0, manpower: pop, maxManpower: pop };
     }
+    if (!G.diplomacyPoints) G.diplomacyPoints = {};
+    for (let c of Object.keys(COUNTRY_CN)) {
+        G.diplomacyPoints[c] = 100;
+    }
 }
 
 function createDivision(provinceId, country, type, skipCost) {
@@ -259,9 +271,12 @@ function createDivision(provinceId, country, type, skipCost) {
     let offX = (Math.random() - 0.5) * 0.06;
     let offY = (Math.random() - 0.5) * 0.06;
 
+    // 统一命名：{国名简称}{编号}{兵种}师
+    let divName = generateUnitName(country, type);
+
     let div = {
         id: G.divIdCounter++,
-        name: '(' + (COUNTRY_CN[country] || country) + ') ' + G.divIdCounter + '.',
+        name: divName,
         type: type,
         province: provinceId,
         country: country,
@@ -277,6 +292,63 @@ function createDivision(provinceId, country, type, skipCost) {
     pd.garrison = (pd.garrison || 0) + 1;
     cData.divCount = (cData.divCount || 0) + 1;
     return div;
+}
+
+// ── 统一单位命名系统 ──
+// 为每个国家维护4个计数器（步、骑、炮、工），编号按建造顺序递增，摧毁后不复用
+G.unitCounters = G.unitCounters || {};
+
+function getNextUnitNumber(country, type) {
+    if (!G.unitCounters[country]) G.unitCounters[country] = {};
+    if (!G.unitCounters[country][type]) G.unitCounters[country][type] = 0;
+    return ++G.unitCounters[country][type];
+}
+
+function generateUnitName(country, type) {
+    const shortName = (typeof COUNTRY_SHORT !== 'undefined' ? COUNTRY_SHORT[country] : null) || COUNTRY_CN[country] || country;
+    const num = getNextUnitNumber(country, type);
+    const typeName = (typeof UNIT_FULL_NAME !== 'undefined' ? UNIT_FULL_NAME[type] : null) || type;
+    return shortName + '第' + num + typeName;
+}
+
+// 获取单位快捷栏简写：德意志第1步兵师 → 德1步
+function getUnitShortName(div) {
+    if (!div || !div.country || !div.type) return div ? div.name : '';
+    const countryShort = (typeof COUNTRY_SHORT !== 'undefined' ? COUNTRY_SHORT[div.country] : null) || '';
+    const typeShort = (typeof UNIT_SHORT !== 'undefined' ? UNIT_SHORT[div.type] : null) || '';
+    // 从全名中提取编号
+    const match = div.name && div.name.match(/第(\d+)/);
+    const num = match ? match[1] : '';
+    if (!countryShort || !typeShort || !num) return div.name;
+    return countryShort.charAt(0) + num + typeShort;
+}
+
+// 迁移旧命名单位到新格式（开局时调用一次）
+function migrateUnitNames() {
+    // 重置计数器
+    G.unitCounters = {};
+    // 按国家+类型分组，按 id 排序分配编号
+    let groups = {};
+    for (let d of G.divisions) {
+        let key = d.country + '|' + d.type;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(d);
+    }
+    for (let key in groups) {
+        let divs = groups[key];
+        // 按 id 排序（保持建造顺序）
+        divs.sort((a, b) => a.id - b.id);
+        for (let i = 0; i < divs.length; i++) {
+            let d = divs[i];
+            let num = i + 1;
+            let shortName = (typeof COUNTRY_SHORT !== 'undefined' ? COUNTRY_SHORT[d.country] : null) || COUNTRY_CN[d.country] || d.country;
+            let typeName = (typeof UNIT_FULL_NAME !== 'undefined' ? UNIT_FULL_NAME[d.type] : null) || d.type;
+            d.name = shortName + '第' + num + typeName;
+            // 同步计数器
+            if (!G.unitCounters[d.country]) G.unitCounters[d.country] = {};
+            G.unitCounters[d.country][d.type] = num;
+        }
+    }
 }
 
 function getCountryProvinces(country) {
@@ -348,6 +420,8 @@ function initCities() {
             provinceId: provId,
             garrison: 0,
             owner: city.country,
+            fireCooldown: 0,
+            maxFireCd: 1,
         };
     }
     // 预计算省份→城市映射，避免每帧 O(provinces*cities) 扫描
@@ -373,15 +447,25 @@ function isPointInPolygon(px, py, polygon) {
 }
 
 function removeDivision(d) {
-    // 创建墓碑
+    // 海军阵亡使用独立的水面沉船标记，陆军使用墓碑
     if (d.rx !== undefined && d.ry !== undefined) {
-        if (!G.gravestones) G.gravestones = [];
-        G.gravestones.push({
-            x: d.rx, y: d.ry,
-            deathTime: G.date.getTime(),
-            country: d.country,
-            type: d.type,
-        });
+        if (d.type === 'navy' || d.type === 'submarine') {
+            if (!G.navyGraves) G.navyGraves = [];
+            G.navyGraves.push({
+                x: d.rx, y: d.ry,
+                deathTime: G.date.getTime(),
+                country: d.country,
+                type: d.type,
+            });
+        } else {
+            if (!G.gravestones) G.gravestones = [];
+            G.gravestones.push({
+                x: d.rx, y: d.ry,
+                deathTime: G.date.getTime(),
+                country: d.country,
+                type: d.type,
+            });
+        }
     }
     let pd = G.provinceData[d.province];
     if (pd) pd.garrison = Math.max(0, (pd.garrison || 0) - 1);
@@ -390,6 +474,8 @@ function removeDivision(d) {
     let idx = G.divisions.indexOf(d);
     if (idx>=0) G.divisions.splice(idx,1);
     if (G.selectedDivisions.includes(d.id)) G.selectedDivisions = G.selectedDivisions.filter(x=>x!==d.id);
+    // 师团战死后自动从集团军移除（不足2个师自动解散）
+    if (d.armyGroupId && typeof cleanupDivisionGroup === 'function') cleanupDivisionGroup(d.id);
 }
 
 // === 保障独立系统 ===
@@ -463,6 +549,7 @@ function declareWar(attacker, defender) {
 
     // 保障独立：如果defender被保障，保障国自动向attacker宣战
     let guarantors = getGuarantors(defender);
+    let guaranteeActivated = guarantors.length > 0;
     for (let g of guarantors) {
         if (g === attacker) continue;
         if (G.atWar[attacker] && G.atWar[attacker][g]) continue;
@@ -470,9 +557,15 @@ function declareWar(attacker, defender) {
         if (!G.atWar[g]) G.atWar[g] = {};
         G.atWar[attacker][g] = true;
         G.atWar[g][attacker] = true;
+        // 被保障国成为保障国的同盟
+        if (!G.alliances) G.alliances = {};
+        if (!G.alliances[g]) G.alliances[g] = {};
+        if (!G.alliances[defender]) G.alliances[defender] = {};
+        G.alliances[g][defender] = true;
+        G.alliances[defender][g] = true;
         queueNews("⚔️ " + (COUNTRY_CN[g]||g) + "履行保障义务，向" + (COUNTRY_CN[attacker]||attacker) + "宣战！");
         G.warAnnouncements[[attacker, g].sort().join('-')] = true;
-        addGameLog((COUNTRY_CN[g]||g) + "因保障义务向" + (COUNTRY_CN[attacker]||attacker) + "宣战");
+        addGameLog((COUNTRY_CN[g]||g) + "因保障义务向" + (COUNTRY_CN[attacker]||attacker) + "宣战，" + (COUNTRY_CN[defender]||defender) + "加入同盟");
     }
 
     // 同盟义务：defender的同盟国自动向attacker宣战
@@ -490,8 +583,10 @@ function declareWar(attacker, defender) {
         }
     }
 
-    // 对同阵营宣战 → 自动宣战阵营内所有国家
-    cascadeFactionWar(attacker, defender);
+    // 保障战争不触发全阵营宣战，由AI外交逐渐卷入
+    if (!guaranteeActivated) {
+        cascadeFactionWar(attacker, defender);
+    }
     return true;
 }
 

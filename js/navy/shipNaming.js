@@ -13,6 +13,9 @@ function getGradeKey(gradeName) {
 function generateShipName(country, gradeName) {
     let gradeKey = getGradeKey(gradeName);
     let pool = (SHIP_NAMES[country] && SHIP_NAMES[country][gradeKey]) || [];
+    if (pool.length === 0 && SHIP_NAMES.COMMON && SHIP_NAMES.COMMON[gradeKey]) {
+        pool = SHIP_NAMES.COMMON[gradeKey];
+    }
     let counterKey = country + '_' + gradeKey;
     if (!G.shipNameCounters) G.shipNameCounters = {};
     if (!G.shipNameCounters[counterKey]) G.shipNameCounters[counterKey] = { index: -1, used: [] };
