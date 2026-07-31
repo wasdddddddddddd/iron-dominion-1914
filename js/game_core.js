@@ -3523,6 +3523,17 @@ canvas.addEventListener("pointerup",(e)=>{
         let r=canvas.getBoundingClientRect();
         let sx=e.clientX-r.left,sy=e.clientY-r.top;
 
+        // 点击左上角国旗 → 打开本国交互页面
+        if (G.playerCountry && sy < TOP_BAR_HEIGHT && sx < 120) {
+            G.diplomacyFocus = G.playerCountry;
+            G.activeTab = 'diplomacy';
+            G.selectedProvince = null;
+            G.selectedCity = null;
+            G.selectedDivisions = [];
+            isDragging = false;
+            return;
+        }
+
         if (G.activeEvent) {
             let bw=420,bh=220,bx=canvas.width/2-bw/2,by=canvas.height/2-bh/2;
             let opts=G.activeEvent.o||G.activeEvent.options||[];
@@ -3979,6 +3990,9 @@ canvas.addEventListener("contextmenu",(e)=>{
 });
 
 document.addEventListener("keydown",(e)=>{
+    // 跳过输入框/下拉框/文本域，避免干扰联机面板输入
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if ((e.key==="r"||e.key==="R") && !G.gameOver) { location.reload(); }
     if (e.key==="Escape") { G.selectedDivisions=[]; selectedProvince=null; G.selectedProvince=null; G.selectedCity=null; G.selectedCities=[]; G.selectedNavyNodeOnMap=false; G.navyProductionMode=false; G.selectedNavyNode=null; G.activeTab=null; _showNavyGuide=false; _navyGuideScroll=0; G.garrisonMode=false; G.garrisonUnitIds=[]; G.selectedArmyGroupId=null; G._cmdModal=null; G._cmdModalScroll=0; }
     if ((e.key==="r"||e.key==="R") && G.gameOver) { resetGame(); }
@@ -4080,6 +4094,8 @@ function gameLoop(timestamp) {
     }
     // 联机客户端模式：跳过模拟，只渲染Host推送的状态
     if (G.multiplayerMode === 'client') {
+        // 单位位置插值 + 日期外推，消除瞬移卡顿与时间跳变
+        if (typeof MP !== 'undefined' && typeof MP.onClientFrame === 'function') MP.onClientFrame();
         render();
         requestAnimationFrame(gameLoop);
         return;
