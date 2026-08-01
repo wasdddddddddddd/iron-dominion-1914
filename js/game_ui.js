@@ -1140,6 +1140,16 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
         const br = worldToScreen(40, 36);
         ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
     }
+    // ===== 山地图层（DEM hillshade 光影 + 真实山脊线） =====
+    if (mountainReady()) {
+        const tl = worldToScreen(-10, 71);
+        const br = worldToScreen(40, 36);
+        const ma = typeof MOUNTAIN_ALPHA !== 'undefined' ? MOUNTAIN_ALPHA : 1;
+        if (ma < 1) ctx.save();
+        ctx.globalAlpha = ma;
+        ctx.drawImage(window.MOUNTAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        if (ma < 1) ctx.restore();
+    }
 
     // ===== Offscreen cache for static geometry =====
     let viewKey = camX.toFixed(3) + ',' + camY.toFixed(3) + ',' + zoom.toFixed(5) + ',' + w + ',' + h;

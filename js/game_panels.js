@@ -132,9 +132,18 @@ function preloadTerrain() {
     img.onerror = function() { console.warn('Failed to load terrain image'); window.TERRAIN_IMG = null; };
     img.src = 'images/terrain_land.png';
     window.TERRAIN_IMG = img;
+    // 山地图层（DEM 提取的 hillshade 光影 + 真实山脊线）
+    const mtn = new Image();
+    mtn.onload = function() { window.MOUNTAIN_IMG = mtn; };
+    mtn.onerror = function() { console.warn('Failed to load mountain layer'); window.MOUNTAIN_IMG = null; };
+    mtn.src = 'images/mountain_layer.png';
+    window.MOUNTAIN_IMG = mtn;
 }
 function terrainReady() {
     return !!(typeof window.TERRAIN_IMG !== 'undefined' && window.TERRAIN_IMG && window.TERRAIN_IMG.complete && window.TERRAIN_IMG.naturalWidth > 0);
+}
+function mountainReady() {
+    return !!(typeof window.MOUNTAIN_IMG !== 'undefined' && window.MOUNTAIN_IMG && window.MOUNTAIN_IMG.complete && window.MOUNTAIN_IMG.naturalWidth > 0);
 }
 
 // ===== 加载旗帜贴图 =====
