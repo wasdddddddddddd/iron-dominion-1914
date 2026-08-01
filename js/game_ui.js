@@ -1,4 +1,4 @@
-// Iron & Dominion 1914 — 渲染引擎（省份版）
+﻿// Iron & Dominion 1914 — 渲染引擎（省份版）
 
 const canvas = document.getElementById("gameCanvas");
 let ctx = canvas.getContext("2d", { willReadFrequently: false });
@@ -565,10 +565,17 @@ function drawCities() {
         // 首都缩小到二分之一
         let bImgSize = city.isCapital ? 54 : (isMajor ? 56 : 33);
         let bCenterY = sy - 10;
+        // 脚底阴影
+        ctx.beginPath();
+        ctx.ellipse(sx, bCenterY + bImgSize * 0.48, bImgSize * 0.32, bImgSize * 0.04, 0, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0,0,0,0.18)';
+        ctx.fill();
         if (buildingImg && buildingImg.width > 0) {
             let imgSize = bImgSize;
             let ix = sx - imgSize/2, iy = sy - 10 - imgSize/2;
+            ctx.imageSmoothingEnabled = false;
             ctx.drawImage(buildingImg, ix, iy, imgSize, imgSize);
+            ctx.imageSmoothingEnabled = true;
         } else {
             // 后备：贴图未加载时使用emoji
             let emoji = city.isCapital ? "🏛️" : (isMajor ? "🏰" : "🏠");
@@ -700,14 +707,6 @@ function drawCities() {
                 ctx.textBaseline = "middle";
                 ctx.fillText("🛡️", sx, sy - 10 - fontSize);
             }
-        }
-
-        // Owner indicator (colored ring)
-        if (owner) {
-            ctx.beginPath(); ctx.arc(sx, sy - 10, fontSize/2 + 2, 0, Math.PI*2);
-            ctx.strokeStyle = COUNTRY_COLORS[owner] || "#888";
-            ctx.lineWidth = 2;
-            ctx.stroke();
         }
 
         // 中立城市标记（0HP 无归属）

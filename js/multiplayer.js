@@ -629,6 +629,16 @@ window.MP = (function() {
                 id: g.id, start: g.start, end: g.end, colorIdx: g.colorIdx
             })) : [],
             frontlines: G.frontlines ? { ...G.frontlines } : {},
+            // 指挥官系统状态
+            commanderState: G.commanderState ? {
+                groups: (G.commanderState.groups || []).map(g => ({
+                    id: g.id, name: g.name, country: g.country,
+                    commanderId: g.commanderId, divisionIds: [...g.divisionIds],
+                })),
+                chiefs: { ...(G.commanderState.chiefs || {}) },
+                commanderPool: G.commanderState.commanderPool ? { ...G.commanderState.commanderPool } : {},
+                chiefPool: G.commanderState.chiefPool ? { ...G.commanderState.chiefPool } : {},
+            } : null,
         };
 
         // 师团
@@ -807,6 +817,17 @@ window.MP = (function() {
 
         // 新闻
         if (state.newsBanner) { G.newsBanner = state.newsBanner; G.newsTimer = state.newsTimer; }
+
+        // 指挥官系统状态
+        if (state.commanderState && G.commanderState) {
+            G.commanderState.groups = (state.commanderState.groups || []).map(g => ({
+                id: g.id, name: g.name, country: g.country,
+                commanderId: g.commanderId, divisionIds: [...g.divisionIds],
+            }));
+            G.commanderState.chiefs = { ...(state.commanderState.chiefs || {}) };
+            G.commanderState.commanderPool = { ...(state.commanderState.commanderPool || {}) };
+            G.commanderState.chiefPool = { ...(state.commanderState.chiefPool || {}) };
+        }
     }
 
     function applyDelta(delta) {
@@ -909,6 +930,42 @@ window.MP = (function() {
                 break;
             case 'alliance':
                 if (typeof formAlliance === 'function') formAlliance(country, action.target);
+                break;
+            case 'garrison_remove':
+                handleRemoteGarrisonRemove(country, action);
+                break;
+            case 'garrison_navy':
+                handleRemoteGarrisonNavy(country, action);
+                break;
+            case 'frontline_cancel':
+                handleRemoteFrontlineCancel(country, action);
+                break;
+            case 'formation_apply':
+                handleRemoteFormationApply(country, action);
+                break;
+            case 'formation_remove':
+                handleRemoteFormationRemove(country, action);
+                break;
+            case 'sub_dive':
+                handleRemoteSubDive(country, action);
+                break;
+            case 'create_army_group':
+                handleRemoteCreateArmyGroup(country, action);
+                break;
+            case 'disband_army_group':
+                handleRemoteDisbandArmyGroup(country, action);
+                break;
+            case 'add_div_to_group':
+                handleRemoteAddDivToGroup(country, action);
+                break;
+            case 'remove_div_from_group':
+                handleRemoteRemoveDivFromGroup(country, action);
+                break;
+            case 'set_chief':
+                handleRemoteSetChief(country, action);
+                break;
+            case 'replace_commander':
+                handleRemoteReplaceCommander(country, action);
                 break;
         }
     }
@@ -1033,6 +1090,108 @@ window.MP = (function() {
             cityLat: action.cityLat,
             cityName: action.cityName,
         });
+    }
+
+    function handleRemoteGarrisonRemove(country, action) {
+        for (let divId of (action.unitIds || [])) {
+            let d = G.divisions.find(x => x.id === divId && x.country === country);
+            if (!d) continue;
+            delete G.patrolTargets[divId];
+            delete G.patrolIndex[divId];
+            d.garrisonCityId = null; d.garrisonCityLon = null; d.garrisonCityLat = null;
+        }
+    }
+
+    function handleRemoteGarrisonNavy(country, action) {
+        for (let divId of (action.unitIds || [])) {
+            let d = G.divisions.find(x => x.id === divId && x.country === country);
+            if (!d) continue;
+            if (typeof isSeaType === 'function' && !isSeaType(d.type)) continue;
+            if (!G.patrolTargets[d.id]) G.patrolTargets[d.id] = [];
+            G.patrolTargets[d.id] = [action.name || 'naval_base'];
+            d.garrisonCityId = null;
+            d.garrisonCityLon = action.lon;
+            d.garrisonCityLat = action.lat;
+            d.patrolChase = 0; d.patrolFired = false;
+            d.state = 'moving';
+            d.targetX = action.lon;
+            d.targetY = action.lat;
+            d.path = null; d.pathIndex = 0;
+        }
+    }
+
+    function handleRemoteFrontlineCancel(country, action) {
+        if (G.frontlines) G.frontlines = {};
+        if (G.frontlineGroups) G.frontlineGroups = [];
+    }
+
+    function handleRemoteFormationApply(country, action) {
+        let groupId = 'form_' + (G._formationGroupCounter || 0);
+        G._formationGroupCounter = (G._formationGroupCounter || 0) + 1;
+        for (let divId of (action.unitIds || [])) {
+            let d = G.divisions.find(x => x.id === divId && x.country === country);
+            if (d && typeof isSeaType === 'function' && isSeaType(d.type)) {
+                d.formation = 'line';
+                d.formationGroup = groupId;
+            }
+        }
+    }
+
+    function handleRemoteFormationRemove(country, action) {
+        for (let divId of (action.unitIds || [])) {
+            let d = G.divisions.find(x => x.id === divId && x.country === country);
+            if (d && typeof isSeaType === 'function' && isSeaType(d.type)) {
+                d.formation = null; d.formationGroup = null;
+            }
+        }
+    }
+
+    function handleRemoteSubDive(country, action) {
+        for (let divId of (action.unitIds || [])) {
+            let d = G.divisions.find(x => x.id === divId && x.country === country);
+            if (!d || d.type !== 'submarine') continue;
+            if (d.submerged) {
+                d.submerged = false; d.surfacing = true; d.diveProgress = 1; d.diving = false;
+            } else {
+                d.diving = true; d.diveProgress = 0; d.surfacing = false;
+            }
+        }
+    }
+
+    function handleRemoteCreateArmyGroup(country, action) {
+        if (typeof createArmyGroup === 'function') {
+            createArmyGroup(country, action.commanderId, action.unitIds);
+        }
+    }
+
+    function handleRemoteDisbandArmyGroup(country, action) {
+        if (typeof disbandArmyGroup === 'function') {
+            disbandArmyGroup(action.groupId);
+        }
+    }
+
+    function handleRemoteAddDivToGroup(country, action) {
+        if (typeof addDivisionToGroup === 'function') {
+            addDivisionToGroup(action.divId, action.groupId);
+        }
+    }
+
+    function handleRemoteRemoveDivFromGroup(country, action) {
+        if (typeof removeDivisionFromGroup === 'function') {
+            removeDivisionFromGroup(action.divId);
+        }
+    }
+
+    function handleRemoteSetChief(country, action) {
+        if (typeof setChief === 'function') {
+            setChief(country, action.commanderId);
+        }
+    }
+
+    function handleRemoteReplaceCommander(country, action) {
+        if (typeof replaceGroupCommander === 'function') {
+            replaceGroupCommander(action.groupId, action.commanderId);
+        }
     }
 
     // ─── 发送操作 ─────────────────────────────────

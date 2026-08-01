@@ -89,12 +89,12 @@ const MANPOWER_COST = {
 
 // Unit type configs — COSTS BALANCED (higher costs, lower income)
 const UNIT_TYPES = {
-    infantry: { cost:50, range:0.204, fireRate:1, damage:14, speed:0.0432, maxStr:100, bulletSpeed:1.4, sym:"🪖", label:"步兵", desc:"基准，全能主力", manpower:15 },
-    engineer: { cost:70, range:0.1428, fireRate:1.25, damage:8.4, speed:0.0389, maxStr:110, bulletSpeed:1.12, sym:"🛠️", label:"工兵", desc:"工程/攻城", manpower:12 },
-    cavalry:  { cost:80, range:0.1224, fireRate:1.43, damage:11.2, speed:0.0648, maxStr:90, bulletSpeed:1.26, sym:"🏇", label:"骑兵", desc:"高速机动/包抄", manpower:10 },
-    artillery:{ cost:120, range:0.675, fireRate:5, damage:35, speed:0.0259, maxStr:70, bulletSpeed:2.52, sym:"💥", label:"炮兵", desc:"远程火力压制", manpower:8 },
-    navy:     { cost:500, range:0.816, fireRate:1.5, damage:80, speed:0.0675, maxStr:500, bulletSpeed:12, sym:"🚢", label:"海军", desc:"巨舰大炮", manpower:5 },
-    submarine:{ cost:350, range:0.9, fireRate:3, damage:55, speed:0.04, maxStr:200, bulletSpeed:10, sym:"🐬", label:"潜艇", desc:"水下伏击，幽灵猎手", manpower:3 },
+    infantry: { cost:50, range:0.204, fireRate:1, damage:14, speed:0.0432, maxStr:100, bulletSpeed:1.4, sym:"🪖", img:"images/unit_infantry.png", label:"步兵", desc:"基准，全能主力", manpower:15 },
+    engineer: { cost:70, range:0.1428, fireRate:1.25, damage:8.4, speed:0.0389, maxStr:110, bulletSpeed:1.12, sym:"🛠️", img:"images/unit_engineer.png", label:"工兵", desc:"工程/攻城", manpower:12 },
+    cavalry:  { cost:80, range:0.1224, fireRate:1.43, damage:11.2, speed:0.0648, maxStr:90, bulletSpeed:1.26, sym:"🏇", img:"images/unit_cavalry.png", label:"骑兵", desc:"高速机动/包抄", manpower:10 },
+    artillery:{ cost:120, range:0.675, fireRate:5, damage:35, speed:0.0259, maxStr:70, bulletSpeed:2.52, sym:"💥", img:"images/unit_artillery.png", label:"炮兵", desc:"远程火力压制", manpower:8 },
+    navy:     { cost:500, range:0.816, fireRate:1.5, damage:80, speed:0.0675, maxStr:500, bulletSpeed:12, sym:"🚢", img:"images/unit_navy.png", label:"海军", desc:"巨舰大炮", manpower:5 },
+    submarine:{ cost:350, range:0.9, fireRate:3, damage:55, speed:0.04, maxStr:200, bulletSpeed:10, sym:"🐬", img:"images/unit_submarine.png", label:"潜艇", desc:"水下伏击，幽灵猎手", manpower:3 },
 };
 
 function initProvinceData() {
@@ -287,6 +287,7 @@ function createDivision(provinceId, country, type, skipCost) {
         targetX: null, targetY: null,
         attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
         fireCooldown: 0, maxFireCd: 0, exp: 0,
+        facing: 'e',
     };
     G.divisions.push(div);
     pd.garrison = (pd.garrison || 0) + 1;

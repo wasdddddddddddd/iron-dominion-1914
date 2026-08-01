@@ -1,3 +1,5 @@
 node_modules/
 .DS_Store
 *.log
+lark_auth_qrcode.png
+lark_qrcode.png

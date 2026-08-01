@@ -718,6 +718,12 @@ moveUnits = function(days) {
         let dist = Math.hypot(dx, dy);
         if (dist > spd) { d.rx += (dx / dist) * spd; d.ry += (dy / dist) * spd; }
         else { d.rx = d.targetX; d.ry = d.targetY; d.state = 'idle'; d.targetX = null; d.targetY = null; d.path = null; }
+        // 更新朝向
+        if (Math.abs(dx) > Math.abs(dy)) {
+            d.facing = dx > 0 ? 'e' : 'w';
+        } else {
+            d.facing = dy > 0 ? 's' : 'n';
+        }
 
         // ===== 外交边界检查（陆军禁止越界） =====
         if (gPF && gPF.owner) {
@@ -825,6 +831,12 @@ moveUnits = function(days) {
         let dist = Math.hypot(dx, dy);
         if (dist > spd) { d.rx += (dx / dist) * spd; d.ry += (dy / dist) * spd; }
         else { d.rx = d.targetX; d.ry = d.targetY; d.state = 'idle'; d.targetX = null; d.targetY = null; d.path = null; }
+        // 更新朝向（海军）
+        if (Math.abs(dx) > Math.abs(dy)) {
+            d.facing = dx > 0 ? 'e' : 'w';
+        } else {
+            d.facing = dy > 0 ? 's' : 'n';
+        }
 
         // ===== 卡死检测（同陆军，比例阈值） =====
         if (d._prevX !== undefined && d._prevY !== undefined) {

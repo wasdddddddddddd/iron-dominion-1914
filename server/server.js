@@ -41,7 +41,13 @@ const server = http.createServer((req, res) => {
     fs.readFile(filePath, (err, data) => {
         if (err) { res.writeHead(404); res.end('Not Found'); return; }
         const ext = path.extname(filePath);
-        res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+        const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+        // 图片文件添加 CORS 头，避免 canvas getImageData 跨域污染
+        if (['.jpg','.jpeg','.png','.gif','.webp','.svg'].includes(ext)) {
+            headers['Access-Control-Allow-Origin'] = '*';
+            headers['Cross-Origin-Resource-Policy'] = 'cross-origin';
+        }
+        res.writeHead(200, headers);
         res.end(data);
     });
 });
@@ -278,8 +284,10 @@ function forwardToHost(info, msg) {
     if (!room) return;
     for (let [ws, ci] of clients) {
         if (ci.id === room.host && ci.roomId === room.id) {
-            msg.senderId = info.id; msg.senderName = info.name;
-            send(ws, msg.type, msg.payload); return;
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: msg.type, payload: msg.payload, senderId: info.id, senderName: info.name }));
+            }
+            return;
         }
     }
 }
