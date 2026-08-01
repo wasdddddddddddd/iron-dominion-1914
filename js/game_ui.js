@@ -577,9 +577,7 @@ function drawCities() {
         if (buildingImg && buildingImg.width > 0) {
             let imgSize = bImgSize;
             let ix = sx - imgSize/2, iy = sy - 10 - imgSize/2;
-            ctx.imageSmoothingEnabled = false;
             ctx.drawImage(buildingImg, ix, iy, imgSize, imgSize);
-            ctx.imageSmoothingEnabled = true;
         } else {
             // 后备：贴图未加载时使用emoji
             let emoji = city.isCapital ? "🏛️" : (isMajor ? "🏰" : "🏠");
@@ -1137,8 +1135,8 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
 
     // ===== 地形底图（TIFF 转换，海面透明，贴在世界范围内） =====
     if (terrainReady()) {
-        const tl = worldToScreen(-10, 71);
-        const br = worldToScreen(40, 36);
+        const tl = worldToScreen(-12, 72);
+        const br = worldToScreen(65, 33);
         ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
     }
 
@@ -1181,8 +1179,8 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     ctx.drawImage(window._borderCache, 0, 0);
     // ===== 山地阴影层（hillshade 光影+山地棕调，画在省份上） =====
     if (mountainShadeReady()) {
-        const tl = worldToScreen(-10, 71);
-        const br = worldToScreen(40, 36);
+        const tl = worldToScreen(-12, 72);
+        const br = worldToScreen(65, 33);
         const ma = typeof MOUNTAIN_SHADE_ALPHA !== 'undefined' ? MOUNTAIN_SHADE_ALPHA : 1;
         if (ma < 1) ctx.save();
         ctx.globalAlpha = ma;
@@ -1191,8 +1189,8 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     }
     // ===== 山脊线层（真实山脊线，画在阴影之上） =====
     if (mountainRidgeReady()) {
-        const tl = worldToScreen(-10, 71);
-        const br = worldToScreen(40, 36);
+        const tl = worldToScreen(-12, 72);
+        const br = worldToScreen(65, 33);
         const ma = typeof MOUNTAIN_RIDGE_ALPHA !== 'undefined' ? MOUNTAIN_RIDGE_ALPHA : 1;
         if (ma < 1) ctx.save();
         ctx.globalAlpha = ma;
