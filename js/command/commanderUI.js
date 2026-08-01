@@ -35,7 +35,7 @@ function cmdTrunc(str, n) {
 function drawCommanderBar() {
     window._cmdBtns = [];
     window._cmdBarRect = null;
-    if (!G.playerCountry || G.activeTab || G.multiplayerMode) return;
+    if (!G.playerCountry || G.activeTab) return;
     let cs = G.commanderState;
     if (!cs) return;
     let h = canvas.height;
@@ -150,7 +150,7 @@ function drawCmdTooltip(text, tx, ty) {
 function drawArmyGroupPanel() {
     window._cmdPanelBtns = [];
     window._cmdPanelRect = null;
-    if (!G.selectedArmyGroupId || G.activeTab || G.multiplayerMode || G.selectedDivisions.length > 0) return;
+    if (!G.selectedArmyGroupId || G.activeTab || G.selectedDivisions.length > 0) return;
     let cs = G.commanderState;
     if (!cs) return;
     let group = getGroupById(G.selectedArmyGroupId);

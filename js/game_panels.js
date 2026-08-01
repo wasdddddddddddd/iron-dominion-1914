@@ -1,24 +1,128 @@
 ﻿// Iron & Dominion 1914 — 游戏UI面板（地图绘制、师团、炮弹、面板）
 
-// ===== 潜艇使用海豚emoji =====
-// submarine image removed, using 🐬 emoji instead
+// ===== 师团像素图片缓存 =====
+// 预加载所有单位类型和建筑物的像素风格图片，自动去除白色背景
+const UNIT_IMAGES = {};
+const BUILDING_IMAGES = {};
 
-// ===== 师团 Emoji 位图缓存 =====
-// 预渲染 emoji 到离屏 canvas，避免每帧 fillText 的昂贵开销
-const _emojiCache = {};
-function _getEmojiBitmap(emoji, size) {
-    const key = emoji + '_' + Math.round(size);
-    if (_emojiCache[key]) return _emojiCache[key];
-    const off = document.createElement('canvas');
-    const dim = Math.ceil(size * 2.2);
-    off.width = dim; off.height = dim;
-    const oc = off.getContext('2d');
-    oc.font = size + "px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
-    oc.textAlign = 'center'; oc.textBaseline = 'middle';
-    oc.fillStyle = '#fff';
-    oc.fillText(emoji, dim / 2, dim / 2);
-    _emojiCache[key] = off;
-    return off;
+function _removeWhiteBg(img) {
+    try {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width; canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        const w = canvas.width, h = canvas.height;
+
+        // 四角 + 四条边中点采样，避开主体可能延伸到的区域
+        const cornerSize = Math.max(3, Math.floor(Math.min(w, h) * 0.08));
+        const samples = [];
+        // 四角密集采样（每个角取 5x5 像素区域）
+        const corners = [[0,0],[w-1,0],[0,h-1],[w-1,h-1]];
+        for (let [cx, cy] of corners) {
+            for (let dx = -2; dx <= 2; dx++) {
+                for (let dy = -2; dy <= 2; dy++) {
+                    let sx = cx + dx, sy = cy + dy;
+                    if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+                        samples.push([sx, sy]);
+                    }
+                }
+            }
+        }
+        // 四条边中点附近采样（各3个点）
+        const midX = Math.floor(w/2), midY = Math.floor(h/2);
+        samples.push([midX, 0], [midX, 1], [midX, 2]);           // 上边中点
+        samples.push([midX, h-1], [midX, h-2], [midX, h-3]);     // 下边中点
+        samples.push([0, midY], [1, midY], [2, midY]);           // 左边中点
+        samples.push([w-1, midY], [w-2, midY], [w-3, midY]);     // 右边中点
+
+        let sumR = 0, sumG = 0, sumB = 0, count = 0;
+        for (let [sx, sy] of samples) {
+            if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
+            let idx = (sy * w + sx) * 4;
+            sumR += data[idx]; sumG += data[idx + 1]; sumB += data[idx + 2];
+            count++;
+        }
+
+        if (count === 0) return canvas;
+        let avgR = Math.round(sumR / count);
+        let avgG = Math.round(sumG / count);
+        let avgB = Math.round(sumB / count);
+
+        // 如果检测到的背景色太暗（亮度<180），说明采样到了主体，回退到近白色去除
+        let bgR = avgR, bgG = avgG, bgB = avgB;
+        let brightness = (avgR + avgG + avgB) / 3;
+        if (brightness < 180) {
+            bgR = 255; bgG = 255; bgB = 255;
+        }
+
+        // 用背景色 ±60 阈值去除背景
+        const threshold = 60;
+        for (let i = 0; i < data.length; i += 4) {
+            if (Math.abs(data[i] - bgR) < threshold &&
+                Math.abs(data[i + 1] - bgG) < threshold &&
+                Math.abs(data[i + 2] - bgB) < threshold) {
+                data[i + 3] = 0;
+            }
+        }
+        ctx.putImageData(imageData, 0, 0);
+        return canvas;
+    } catch (e) {
+        console.warn('White bg removal failed for image, using raw:', e.message);
+        return img;
+    }
+}
+
+function _loadAndProcess(src, targetObj, key, pixelate = false) {
+    const img = new Image();
+    img.onload = function() {
+        let processed = img;
+        if (pixelate) {
+            // 降低分辨率实现像素化效果
+            const offCanvas = document.createElement('canvas');
+            const scale = 0.4;
+            offCanvas.width = Math.max(1, Math.floor(img.width * scale));
+            offCanvas.height = Math.max(1, Math.floor(img.height * scale));
+            const oc = offCanvas.getContext('2d');
+            oc.imageSmoothingEnabled = false;
+            oc.drawImage(img, 0, 0, offCanvas.width, offCanvas.height);
+            processed = offCanvas;
+        }
+        targetObj[key] = processed;
+    };
+    img.onerror = function() {
+        console.warn('Failed to load image:', src);
+    };
+    img.src = src;
+}
+
+// 国家专属贴图文件夹映射
+const COUNTRY_IMG_FOLDER = {
+    'UK': 'uk', 'FRANCE': 'france', 'GERMANY': 'germany',
+    'AUSTRIA_HUNGARY': 'austria', 'ITALY': 'italy', 'RUSSIA': 'russia'
+};
+// 国家专属贴图类型（步兵、骑兵、海军；工兵/炮兵/潜艇不区分国家）
+const COUNTRY_SPECIFIC_TYPES = ['infantry', 'cavalry', 'navy'];
+
+function preloadUnitImages() {
+    // 通用单位贴图（工兵/炮兵/潜艇所有国家共用，步兵/骑兵/海军非列强国家使用）
+    // 海军不像素化，其余单位降低分辨率实现像素化效果
+    for (let [type, cfg] of Object.entries(UNIT_TYPES)) {
+        if (cfg.img) _loadAndProcess(cfg.img, UNIT_IMAGES, type, type !== 'navy');
+    }
+    // 加载六大列强国家专属贴图（步兵、骑兵像素化，海军不像素化）
+    for (let [country, folder] of Object.entries(COUNTRY_IMG_FOLDER)) {
+        for (let type of COUNTRY_SPECIFIC_TYPES) {
+            _loadAndProcess('images/' + folder + '/' + type + '.png', UNIT_IMAGES, country + '_' + type, type !== 'navy');
+        }
+    }
+    // 建筑物图片（不像素化）
+    _loadAndProcess('images/building_capital.png', BUILDING_IMAGES, 'capital');
+    _loadAndProcess('images/building_major.png', BUILDING_IMAGES, 'major');
+    _loadAndProcess('images/building_small.png', BUILDING_IMAGES, 'small');
+    _loadAndProcess('images/building_factory.png', BUILDING_IMAGES, 'factory');
+    _loadAndProcess('images/building_naval.png', BUILDING_IMAGES, 'naval');
 }
 
 // ===== 加载旗帜贴图 =====
@@ -361,62 +465,110 @@ function drawDivisions() {
         let r = isSel ? BASE + 3 : BASE;
         let ut = UNIT_TYPES[div.type] || UNIT_TYPES.infantry;
 
-        // === Unit background circle (diplomatic) ===
-        let bgColor = null;
-        let bgRadius = r + 4;
-        let isAlly = G.alliances && G.playerCountry && G.alliances[G.playerCountry] && G.alliances[G.playerCountry][div.country];
-        let isAtWar = isAtWarWithPlayer(div.country);
-
-        if (isPlayer) {
-            bgColor = "rgba(80,255,80,0.18)"; // player = light green
-        } else if (isAtWar) {
-            bgColor = "rgba(255,80,80,0.20)"; // enemy = light red
-        } else if (isAlly) {
-            bgColor = "rgba(80,160,255,0.18)"; // ally = light blue
-        } else {
-            bgColor = "rgba(255,255,150,0.12)"; // neutral = light yellow
-        }
-        if (bgColor) {
-            ctx.beginPath(); ctx.arc(sx, sy, bgRadius, 0, Math.PI*2);
+        // === 选中时才显示外交圈 ===
+        if (isSel) {
+            let isAlly = G.alliances && G.playerCountry && G.alliances[G.playerCountry] && G.alliances[G.playerCountry][div.country];
+            let isAtWar = isAtWarWithPlayer(div.country);
+            let bgColor;
+            if (isPlayer) bgColor = "rgba(80,255,80,0.22)";
+            else if (isAtWar) bgColor = "rgba(255,80,80,0.24)";
+            else if (isAlly) bgColor = "rgba(80,160,255,0.22)";
+            else bgColor = "rgba(255,255,150,0.16)";
+            ctx.beginPath(); ctx.arc(sx, sy, r + 4, 0, Math.PI*2);
             ctx.fillStyle = bgColor; ctx.fill();
-            ctx.strokeStyle = bgColor.replace('0.20','0.4').replace('0.15','0.3');
-            ctx.lineWidth = 1.5; ctx.stroke();
+            ctx.strokeStyle = bgColor.replace('0.24','0.5').replace('0.22','0.45').replace('0.16','0.35');
+            ctx.lineWidth = 2; ctx.stroke();
         }
 
-        if (isSel) { ctx.shadowColor = "#c8a830"; ctx.shadowBlur = 10; }
+        // 国家色圆点（始终显示，但未选中时更小更淡）
+        if (isSel) {
+            ctx.shadowColor = "#c8a830"; ctx.shadowBlur = 10;
+        }
         ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI*2);
-        ctx.fillStyle = COUNTRY_COLORS[div.country] || "#888"; ctx.fill();
+        ctx.fillStyle = COUNTRY_COLORS[div.country] || "#888";
+        ctx.fill();
         ctx.shadowBlur = 0;
         if (isSel) { ctx.strokeStyle = "#c8a830"; ctx.lineWidth = 2; ctx.stroke(); }
 
-                        // === Draw emoji ===
-                let emoji = ut.sym;
-                ctx.save();
-                // 潜艇使用海豚emoji
-                if (div.type === 'submarine') {
-                    let subAlpha = 1;
-                    if (div.submerged) subAlpha = 0.3;
-                    else if (div.diving) subAlpha = 0.3 + 0.7 * (1 - (div.diveProgress || 0));
-                    ctx.globalAlpha = subAlpha;
-                    ctx.font = (r * 2) + "px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
-                    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-                    ctx.fillStyle = "#fff";
-                    ctx.fillText("🐬", sx, sy - 1);
-                    ctx.globalAlpha = 1;
-                } else {
-                    ctx.font = (r*1.5)+"px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
-                    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-                    ctx.fillStyle = "#fff";
-                    ctx.fillText(emoji, sx, sy-1);
-                }
-                // 下潜状态提示（水波纹）
-                if (div.submerged) {
-                    ctx.font = "7px sans-serif";
-                    ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-                    ctx.fillStyle = "rgba(60,200,255,0.7)";
-                    ctx.fillText("🌊", sx, sy - r - 6);
-                }
-                ctx.restore();
+        // === 脚底阴影（在单位贴图下方，潜水艇下潜时不显示） ===
+        let imgSize = div.type === 'navy' ? r * 9 : r * 3.5;
+        if (div.type !== 'submarine' || !div.submerged) {
+            let shadowY = sy + imgSize * 0.5;
+            let shadowRX = imgSize * 0.38;
+            let shadowRY = imgSize * 0.06;
+            ctx.beginPath();
+            ctx.ellipse(sx, shadowY, shadowRX, shadowRY, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0,0,0,0.25)';
+            ctx.fill();
+        }
+
+        // === Draw pixel art unit image (country-specific, Canvas flip for direction) ===
+        let countryImg = UNIT_IMAGES[div.country + '_' + div.type];
+        let img = countryImg || UNIT_IMAGES[div.type];
+        ctx.save();
+        if (div.type === 'submarine') {
+            let subAlpha = 1;
+            if (div.submerged) subAlpha = 0.3;
+            else if (div.diving) subAlpha = 0.3 + 0.7 * (1 - (div.diveProgress || 0));
+            ctx.globalAlpha = subAlpha;
+        }
+        if (img && img.width > 0) {
+            // 非潜艇单位轻微透明，让像素图融入纯色地图
+            if (div.type !== 'submarine') {
+                ctx.globalAlpha = div.type === 'navy' ? 0.92 : 0.85;
+            }
+            // 像素化单位关闭平滑以保留锯齿效果，海军保持原样
+            if (div.type !== 'navy') ctx.imageSmoothingEnabled = false;
+            // 方向翻转：德奥俄贴图默认朝左，英法意默认朝右，镜像逻辑相反
+            const LEFT_FACING_COUNTRIES = ['GERMANY', 'AUSTRIA_HUNGARY', 'RUSSIA'];
+            const isLeftFacing = LEFT_FACING_COUNTRIES.includes(div.country);
+            // 右朝向贴图：朝西(w)时翻转；左朝向贴图：朝东(e)或无朝向时翻转
+            const shouldFlip = (div.facing === 'w' && !isLeftFacing) ||
+                               ((div.facing === 'e' || !div.facing) && isLeftFacing);
+            if (shouldFlip) {
+                ctx.translate(sx, sy);
+                ctx.scale(-1, 1);
+                ctx.drawImage(img, -imgSize/2, -imgSize/2, imgSize, imgSize);
+            } else {
+                ctx.drawImage(img, sx - imgSize/2, sy - imgSize/2, imgSize, imgSize);
+            }
+            if (div.type !== 'navy') ctx.imageSmoothingEnabled = true;
+        } else {
+            // 后备：图片未加载完成时显示emoji
+            ctx.font = (r*1.5)+"px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.fillStyle = "#fff";
+            ctx.fillText(ut.sym, sx, sy-1);
+        }
+        // 下潜状态提示（水波纹）
+        if (div.submerged) {
+            ctx.font = "7px sans-serif";
+            ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+            ctx.fillStyle = "rgba(60,200,255,0.7)";
+            ctx.fillText("🌊", sx, sy - r - 6);
+        }
+        ctx.restore();
+
+        // === 陆军移动扬尘效果 ===
+        let isMoving = div.state === 'moving' || div.moving || (div.targetX !== null && div.targetX !== undefined);
+        if (isMoving && div.type !== 'navy' && div.type !== 'submarine') {
+            let realNow = performance.now();
+            let dustCount = 6;
+            let dustBaseY = sy + imgSize * 0.45;
+            for (let i = 0; i < dustCount; i++) {
+                let seed = div.id * 100 + i;
+                let angle = (realNow / 900 + seed * 1.7) % (Math.PI * 2);
+                let dist = r * 1.0 + Math.sin(realNow / 500 + seed) * r * 0.5;
+                let dx = Math.cos(angle) * dist;
+                let dy = Math.sin(angle) * dist * 0.3;
+                let alpha = 0.18 + Math.sin(realNow / 350 + seed * 2.3) * 0.10;
+                let size = 1.5 + Math.sin(realNow / 280 + seed * 0.9) * 0.8;
+                ctx.beginPath();
+                ctx.arc(sx + dx, dustBaseY + dy, size, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(160,140,115,' + alpha.toFixed(2) + ')';
+                ctx.fill();
+            }
+        }
 
         // === Patrol shield icon above unit ===
         if (G.patrolTargets[div.id] && G.patrolTargets[div.id].length > 0) {
@@ -483,7 +635,7 @@ function drawDivisions() {
     } // end zoom check for unit drawing
 
     // ===== 集团军边框：同色圆环；选中集团军时脉冲高亮 =====
-    if (!G.multiplayerMode && zoom > 0.35 && G.commanderState && G.commanderState.groups && G.commanderState.groups.length > 0) {
+    if (zoom > 0.35 && G.commanderState && G.commanderState.groups && G.commanderState.groups.length > 0) {
         let t = Date.now() / 400;
         for (let div of G.divisions) {
             if (!div.armyGroupId) continue;
@@ -1146,7 +1298,7 @@ function drawCityPanel() {
         ly += 16;
         for (let bq of cityQueue) {
             let progress = bq.totalDays > 0 ? Math.round((1 - bq.days / bq.totalDays) * 100) : 0;
-            let label = bq.type === 'factory' ? '🏗️ 工厂' : (UNIT_TYPES[bq.unitType] ? UNIT_TYPES[bq.unitType].sym + ' ' + UNIT_TYPES[bq.unitType].label : '单位');
+            let label = bq.type === 'factory' ? '🏗️ 工厂' : (UNIT_TYPES[bq.unitType] ? '[' + UNIT_TYPES[bq.unitType].label + ']' : '单位');
             let remaining = Math.ceil(bq.days);
             // 置顶按钮（最左侧，仅当非第一项时显示）
             let isFirst = (cityQueue.indexOf(bq) === 0);
@@ -1499,7 +1651,7 @@ function drawMultiCityPanel() {
         ly += 16;
         for (let bq of cityQueue) {
             let progress = bq.totalDays > 0 ? Math.round((1 - bq.days / bq.totalDays) * 100) : 0;
-            let label = bq.type === 'factory' ? '🏗️ 工厂' : (UNIT_TYPES[bq.unitType] ? UNIT_TYPES[bq.unitType].sym + ' ' + UNIT_TYPES[bq.unitType].label : '单位');
+            let label = bq.type === 'factory' ? '🏗️ 工厂' : (UNIT_TYPES[bq.unitType] ? '[' + UNIT_TYPES[bq.unitType].label + ']' : '单位');
             let remaining = Math.ceil(bq.days);
             ctx.fillStyle = "rgba(200,180,150,0.4)";
             ctx.font = "10px sans-serif";
@@ -1761,7 +1913,7 @@ function drawCountrySidebar() {
             ctx.fillStyle = "rgba(200,180,150,0.6)";
             ctx.fillText("🎖️ 总司令: （现任已被指派集团军，光环失效）", x + 16, sy);
         }
-        if (co === G.playerCountry && !G.multiplayerMode && typeof setChief === 'function') {
+        if (co === G.playerCountry && typeof setChief === 'function') {
             let bX = x + w - 88, bY = sy - 4, bW = 76, bH = 20;
             let bh = mouseX !== undefined && mouseX > bX && mouseX < bX + bW && mouseY > bY && mouseY < bY + bH;
             CT.drawRoundedBtn(ctx, bX, bY, bW, bH, "更换总司令", { hovered: bh, style: "highlight", font: "bold 10px Georgia,serif" });
@@ -2316,9 +2468,9 @@ function drawMilitaryPanel(py, ph, startX) {
             ctx.font = "10px Georgia,serif";
             let txt;
             if (shipInfo) {
-                txt = ut.sym + " " + d.name + "[" + shipInfo.gradeName + "]" + (d.focusTarget ? " ⚡集火" : "");
+                txt = "[" + ut.label + "] " + d.name + "[" + shipInfo.gradeName + "]" + (d.focusTarget ? " ⚡集火" : "");
             } else {
-                txt = ut.sym + " " + d.name + " [" + Math.floor(d.strength) + "HP]" + (d.focusTarget ? " ⚡集火" : "");
+                txt = "[" + ut.label + "] " + d.name + " [" + Math.floor(d.strength) + "HP]" + (d.focusTarget ? " ⚡集火" : "");
             }
             ctx.fillText(txt, startX, sy + 14 + i * 13);
         }
@@ -2708,9 +2860,9 @@ function drawSelectedUnitSidebar() {
     let hasNavyFormation = navySel.length > 1;
     let hasSub = selDivs.some(d => d.type === 'submarine');
 
-    // 指挥系统：本国陆军可编入集团军（1个师即可编成新集团军，可编成空集团军；联机模式不可用）
+    // 指挥系统：本国陆军可编入集团军（1个师即可编成新集团军，可编成空集团军）
     let landSel = selDivs.filter(d => typeof isSeaType === 'function' && !isSeaType(d.type));
-    let canFormGroup = !G.multiplayerMode && landSel.length >= 1;
+    let canFormGroup = landSel.length >= 1;
 
     let x = canvas.width - 310;
     let y = TOP_BAR_HEIGHT + 10;

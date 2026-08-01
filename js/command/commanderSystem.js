@@ -108,7 +108,7 @@ function getAvailableCommanders(code, excludeId) {
 // ==== 加成计算（纯数值层） ====
 function getDivisionBonuses(div) {
     let b = { atk: 0, hp: 0, spd: 0, logi: 0 };
-    if (!div || !div.country || G.multiplayerMode) return b;
+    if (!div || !div.country) return b;
     let cs = G.commanderState;
     if (!cs) return b;
     let group = getGroupOfDivision(div.id);
@@ -137,7 +137,7 @@ function getDivisionLogiBonus(d) { return getDivisionBonuses(d).logi; }
 // 加成明细拆分（集团军指挥官 / 总司令光环分开返回，便于叠加显示）
 function getBonusBreakdown(div) {
     let out = { group: null, aura: null };
-    if (!div || !div.country || G.multiplayerMode) return out;
+    if (!div || !div.country) return out;
     let cs = G.commanderState;
     if (!cs) return out;
     let group = getGroupOfDivision(div.id);
@@ -161,7 +161,6 @@ function getBonusBreakdown(div) {
 function createArmyGroup(code, commanderId, divIds) {
     let cs = G.commanderState;
     if (!cs) return { ok: false, msg: "指挥系统未初始化" };
-    if (G.multiplayerMode) return { ok: false, msg: "联机模式暂不支持指挥系统" };
     if (cs.groups.filter(g => g.country === code).length >= 6) {
         return { ok: false, msg: "集团军数量已达上限（6个），请先在集团军管理面板删除部分集团军" };
     }
@@ -267,7 +266,6 @@ function removeDivisionFromGroup(divId) {
 function addDivisionToGroup(divId, groupId) {
     let cs = G.commanderState;
     if (!cs) return { ok: false, msg: "指挥系统未初始化" };
-    if (G.multiplayerMode) return { ok: false, msg: "联机模式暂不支持指挥系统" };
     let group = getGroupById(groupId);
     if (!group) return { ok: false, msg: "集团军不存在" };
     let d = G.divisions.find(x => x.id === divId);
@@ -321,7 +319,6 @@ function removeFromPool(code, cid) {
 function setChief(code, cmdId) {
     let cs = G.commanderState;
     if (!cs) return { ok: false, msg: "指挥系统未初始化" };
-    if (G.multiplayerMode) return { ok: false, msg: "联机模式暂不支持指挥系统" };
     if (cs.chiefs[code] === cmdId) return { ok: false, msg: "该将领已是现任总司令" };
     let d = commanderDataOf(code, cmdId);
     if (!d) return { ok: false, msg: "找不到该将领" };
