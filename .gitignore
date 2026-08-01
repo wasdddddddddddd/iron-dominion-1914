@@ -3,3 +3,4 @@ node_modules/
 *.log
 lark_auth_qrcode.png
 lark_qrcode.png
+exportImage.tiff
