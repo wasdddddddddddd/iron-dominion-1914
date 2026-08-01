@@ -132,18 +132,26 @@ function preloadTerrain() {
     img.onerror = function() { console.warn('Failed to load terrain image'); window.TERRAIN_IMG = null; };
     img.src = 'images/terrain_land.png';
     window.TERRAIN_IMG = img;
-    // 山地图层（DEM 提取的 hillshade 光影 + 真实山脊线）
-    const mtn = new Image();
-    mtn.onload = function() { window.MOUNTAIN_IMG = mtn; };
-    mtn.onerror = function() { console.warn('Failed to load mountain layer'); window.MOUNTAIN_IMG = null; };
-    mtn.src = 'images/mountain_layer.png';
-    window.MOUNTAIN_IMG = mtn;
+    // 山地图层：阴影（画省份下）+ 山脊线（画省份上）
+    const shade = new Image();
+    shade.onload = function() { window.MOUNTAIN_SHADE_IMG = shade; };
+    shade.onerror = function() { console.warn('Failed to load mountain shade'); window.MOUNTAIN_SHADE_IMG = null; };
+    shade.src = 'images/mountain_shade.png';
+    window.MOUNTAIN_SHADE_IMG = shade;
+    const ridge = new Image();
+    ridge.onload = function() { window.MOUNTAIN_RIDGE_IMG = ridge; };
+    ridge.onerror = function() { console.warn('Failed to load mountain ridge'); window.MOUNTAIN_RIDGE_IMG = null; };
+    ridge.src = 'images/mountain_ridge.png';
+    window.MOUNTAIN_RIDGE_IMG = ridge;
 }
 function terrainReady() {
     return !!(typeof window.TERRAIN_IMG !== 'undefined' && window.TERRAIN_IMG && window.TERRAIN_IMG.complete && window.TERRAIN_IMG.naturalWidth > 0);
 }
-function mountainReady() {
-    return !!(typeof window.MOUNTAIN_IMG !== 'undefined' && window.MOUNTAIN_IMG && window.MOUNTAIN_IMG.complete && window.MOUNTAIN_IMG.naturalWidth > 0);
+function mountainShadeReady() {
+    return !!(typeof window.MOUNTAIN_SHADE_IMG !== 'undefined' && window.MOUNTAIN_SHADE_IMG && window.MOUNTAIN_SHADE_IMG.complete && window.MOUNTAIN_SHADE_IMG.naturalWidth > 0);
+}
+function mountainRidgeReady() {
+    return !!(typeof window.MOUNTAIN_RIDGE_IMG !== 'undefined' && window.MOUNTAIN_RIDGE_IMG && window.MOUNTAIN_RIDGE_IMG.complete && window.MOUNTAIN_RIDGE_IMG.naturalWidth > 0);
 }
 
 // ===== 加载旗帜贴图 =====
