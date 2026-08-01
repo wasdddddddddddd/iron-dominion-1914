@@ -123,6 +123,10 @@ function preloadUnitImages() {
     _loadAndProcess('images/building_small.png', BUILDING_IMAGES, 'small');
     _loadAndProcess('images/building_factory.png', BUILDING_IMAGES, 'factory');
     _loadAndProcess('images/building_naval.png', BUILDING_IMAGES, 'naval');
+    // 加载六大列强国家专属首都贴图
+    for (let [country, folder] of Object.entries(COUNTRY_IMG_FOLDER)) {
+        _loadAndProcess('images/' + folder + '/capital.png', BUILDING_IMAGES, country + '_capital');
+    }
 }
 
 // ===== 地形底图（由 exportImage.tiff 转换，海面已透明） =====

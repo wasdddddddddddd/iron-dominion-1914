@@ -2,10 +2,10 @@
 const PIXELS_PER_DEGREE=100,MIN_ZOOM=0.08,MAX_ZOOM=30.0;
 const STRATEGIC_ZOOM=0.8,TACTICAL_ZOOM=1.8;
 // 地形底图：省份填充透明度（<1 时透出下方地形纹理；无地形图时自动用 1）
-const TERRAIN_FILL_ALPHA=0.8;
-// 山地阴影层强度（hillshade，画在省份下）
+const TERRAIN_FILL_ALPHA=0.65;
+// 山地阴影层强度（hillshade 光影+山地棕调，画在省份上）
 const MOUNTAIN_SHADE_ALPHA=1;
-// 山脊线层强度（真实山脊线，画在省份上）
+// 山脊线层强度（真实山脊线，画在阴影之上）
 const MOUNTAIN_RIDGE_ALPHA=1;
 const MAP_CENTER_LON=10,MAP_CENTER_LAT=50;
 const OCEAN_COLOR_TOP="#1a2a3a",OCEAN_COLOR_BOTTOM="#1a2535";

@@ -554,7 +554,8 @@ function drawCities() {
         let buildingImg = null;
         let fontSize, nameColor;
         if (city.isCapital) {
-            buildingImg = BUILDING_IMAGES['capital'];
+            let origCountry = city.country;
+            buildingImg = BUILDING_IMAGES[origCountry + '_capital'] || BUILDING_IMAGES['capital'];
             fontSize = 22; nameColor = "#c8a830";
         } else if (isMajor) {
             buildingImg = BUILDING_IMAGES['major'];
@@ -1140,16 +1141,6 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
         const br = worldToScreen(40, 36);
         ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
     }
-    // ===== 山地阴影层（hillshade，画在省份下面） =====
-    if (mountainShadeReady()) {
-        const tl = worldToScreen(-10, 71);
-        const br = worldToScreen(40, 36);
-        const ma = typeof MOUNTAIN_SHADE_ALPHA !== 'undefined' ? MOUNTAIN_SHADE_ALPHA : 1;
-        if (ma < 1) ctx.save();
-        ctx.globalAlpha = ma;
-        ctx.drawImage(window.MOUNTAIN_SHADE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
-        if (ma < 1) ctx.restore();
-    }
 
     // ===== Offscreen cache for static geometry =====
     let viewKey = camX.toFixed(3) + ',' + camY.toFixed(3) + ',' + zoom.toFixed(5) + ',' + w + ',' + h;
@@ -1188,7 +1179,17 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
 
     // Blit borders + rivers cache on top of province fills
     ctx.drawImage(window._borderCache, 0, 0);
-    // ===== 山脊线层（真实山脊线，画在省份/边界之上，单位之下） =====
+    // ===== 山地阴影层（hillshade 光影+山地棕调，画在省份上） =====
+    if (mountainShadeReady()) {
+        const tl = worldToScreen(-10, 71);
+        const br = worldToScreen(40, 36);
+        const ma = typeof MOUNTAIN_SHADE_ALPHA !== 'undefined' ? MOUNTAIN_SHADE_ALPHA : 1;
+        if (ma < 1) ctx.save();
+        ctx.globalAlpha = ma;
+        ctx.drawImage(window.MOUNTAIN_SHADE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        if (ma < 1) ctx.restore();
+    }
+    // ===== 山脊线层（真实山脊线，画在阴影之上） =====
     if (mountainRidgeReady()) {
         const tl = worldToScreen(-10, 71);
         const br = worldToScreen(40, 36);
