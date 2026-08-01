@@ -97,6 +97,7 @@ function initHistoricalNavy() {
             state: 'idle', targetX: null, targetY: null,
             attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
             fireCooldown: 0, maxFireCd: 0, exp: 0,
+            facing: 'e',
         });
         pd.garrison = (pd.garrison || 0) + 1;
         cData.divCount = (cData.divCount || 0) + 1;
@@ -328,6 +329,7 @@ if (typeof initNavyNodes === 'function' && typeof NAVAL_BASES !== 'undefined') {
                         attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
                         fireCooldown: 0, maxFireCd: 0, exp: 0,
                         shipId: ship.id,
+                        facing: 'e',
                     };
                     applyNavyShipStats(_div, ship);
                     G.divisions.push(_div);
@@ -574,7 +576,14 @@ outer: for (let d of G.divisions) {
             let dx=d.targetX-d.rx;let dy=d.targetY-d.ry;
             let dist=Math.hypot(dx,dy);
             if(dist>speed){
-                d.rx+=(dx/dist)*speed;d.ry+=(dy/dist)*speed;
+                let ndx = dx/dist; let ndy = dy/dist;
+                d.rx+=ndx*speed;d.ry+=ndy*speed;
+                // Track facing direction based on movement
+                if (Math.abs(ndx) > Math.abs(ndy)) {
+                    d.facing = ndx > 0 ? 'e' : 'w';
+                } else {
+                    d.facing = ndy > 0 ? 's' : 'n';
+                }
             }else{
                 d.rx=d.targetX;d.ry=d.targetY;
                 d.state='idle';d.targetX=null;d.targetY=null;
@@ -1528,6 +1537,7 @@ function processBuildQueue(dtMs) {
                     attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
                     fireCooldown: 0, maxFireCd: 0, exp: 0,
                     submerged: false,
+                    facing: 'e',
                 };
                 let ut = UNIT_TYPES.submarine;
                 _sub.maxStrength = ut.maxStr;
@@ -1551,6 +1561,7 @@ function processBuildQueue(dtMs) {
                             attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
                             fireCooldown: 0, maxFireCd: 0, exp: 0,
                             shipId: ship.id,
+                            facing: 'e',
                         };
                         applyNavyShipStats(_div3, ship);
                         G.divisions.push(_div3);
@@ -1912,6 +1923,7 @@ function updateAI() {
                                             attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
                                             fireCooldown: 0, maxFireCd: 0, exp: 0,
                                             shipId: ship.id,
+                                            facing: 'e',
                                         };
                                         applyNavyShipStats(_div2, ship);
                                         G.divisions.push(_div2);
@@ -2723,12 +2735,25 @@ function handleUIClick(mx,my) {
                     if (b.id === 'group_replace') {
                         G._cmdModal = { mode: 'replace', groupId: G.selectedArmyGroupId }; G._cmdModalScroll = 0;
                     } else if (b.id === 'group_delete') {
+                        // 联机客户端：转发到Host
+                        if (G.multiplayerMode === 'client') {
+                            MP.sendAction({ type: 'disband_army_group', groupId: G.selectedArmyGroupId });
+                            addGameLog("已向Host发送解散集团军指令");
+                            G.selectedArmyGroupId = null;
+                            return true;
+                        }
                         let res = disbandArmyGroup(G.selectedArmyGroupId);
                         if (res.ok) { addGameLog("集团军已删除，指挥官返回可用池"); G.selectedArmyGroupId = null; }
                     } else if (b.id === 'group_disband') {
                         G._cmdModal = { mode: 'confirmDisband', groupId: G.selectedArmyGroupId };
                     } else if (b.id.indexOf('member_out_') === 0) {
                         let divId = parseInt(b.id.slice('member_out_'.length));
+                        // 联机客户端：转发到Host
+                        if (G.multiplayerMode === 'client') {
+                            MP.sendAction({ type: 'remove_div_from_group', divId: divId });
+                            addGameLog("已向Host发送移除师团指令");
+                            return true;
+                        }
                         removeDivisionFromGroup(divId);
                     }
                     return true;
@@ -2749,6 +2774,13 @@ function handleUIClick(mx,my) {
                     } else if (b.id.indexOf('form_cmd_') === 0) {
                         let cid = b.id.slice('form_cmd_'.length);
                         let landDivs = G.selectedDivisions.map(id => G.divisions.find(d => d.id === id)).filter(d => d && d.country === G.playerCountry && !isSeaType(d.type));
+                        // 联机客户端：转发到Host
+                        if (G.multiplayerMode === 'client') {
+                            MP.sendAction({ type: 'create_army_group', commanderId: cid, unitIds: landDivs.map(dd => dd.id) });
+                            addGameLog("已向Host发送编成集团军指令");
+                            G._cmdModal = null;
+                            return true;
+                        }
                         let res = createArmyGroup(G.playerCountry, cid, landDivs.map(dd => dd.id));
                         if (res.ok) {
                             let cm = commanderDataOf(G.playerCountry, cid);
@@ -2759,6 +2791,13 @@ function handleUIClick(mx,my) {
                         }
                     } else if (b.id.indexOf('replace_cmd_') === 0) {
                         let cid = b.id.slice('replace_cmd_'.length);
+                        // 联机客户端：转发到Host
+                        if (G.multiplayerMode === 'client') {
+                            MP.sendAction({ type: 'replace_commander', groupId: G.selectedArmyGroupId, commanderId: cid });
+                            addGameLog("已向Host发送更换指挥官指令");
+                            G._cmdModal = null;
+                            return true;
+                        }
                         let res = replaceGroupCommander(G.selectedArmyGroupId, cid);
                         if (res.ok) {
                             let cm = commanderDataOf(G.playerCountry, cid);
@@ -2769,6 +2808,13 @@ function handleUIClick(mx,my) {
                         }
                     } else if (b.id.indexOf('chief_set_') === 0) {
                         let cid = b.id.slice('chief_set_'.length);
+                        // 联机客户端：转发到Host
+                        if (G.multiplayerMode === 'client') {
+                            MP.sendAction({ type: 'set_chief', commanderId: cid });
+                            addGameLog("已向Host发送任命总司令指令");
+                            G._cmdModal = null;
+                            return true;
+                        }
                         let res = setChief(G.playerCountry, cid);
                         addGameLog(res && res.msg ? res.msg : (res && res.ok ? "已任命新总司令" : "任命失败"));
                         if (res && res.ok) G._cmdModal = null;
@@ -2776,6 +2822,15 @@ function handleUIClick(mx,my) {
                         let gid = b.id.slice('join_group_'.length);
                         let joinDivs = G.selectedDivisions.map(id => G.divisions.find(d => d.id === id)).filter(d => d && d.country === G.playerCountry && !isSeaType(d.type));
                         if (joinDivs.length === 0) return true;
+                        // 联机客户端：转发到Host
+                        if (G.multiplayerMode === 'client') {
+                            for (let jd of joinDivs) {
+                                MP.sendAction({ type: 'add_div_to_group', divId: jd.id, groupId: gid });
+                            }
+                            addGameLog("已向Host发送 " + joinDivs.length + " 个师编入集团军指令");
+                            G._cmdModal = null;
+                            return true;
+                        }
                         let added = 0, lastMsg = "";
                         for (let jd of joinDivs) {
                             let jres = addDivisionToGroup(jd.id, gid);
@@ -2789,6 +2844,14 @@ function handleUIClick(mx,my) {
                             addGameLog(lastMsg || "加入失败");
                         }
                     } else if (b.id === 'confirm_disband_yes') {
+                        // 联机客户端：转发到Host
+                        if (G.multiplayerMode === 'client') {
+                            MP.sendAction({ type: 'disband_army_group', groupId: G._cmdModal.groupId });
+                            addGameLog("已向Host发送解散集团军指令");
+                            G.selectedArmyGroupId = null;
+                            G._cmdModal = null;
+                            return true;
+                        }
                         let res = disbandArmyGroup(G._cmdModal.groupId);
                         if (res.ok) { addGameLog("集团军已解散，指挥官返回可用池"); G.selectedArmyGroupId = null; }
                         G._cmdModal = null;
@@ -2820,6 +2883,14 @@ function handleUIClick(mx,my) {
                 if (b.enabled === false) continue;
                 // Patrol/garrison buttons: no selectedProvince required
                 if (b.id === "patrol_add") {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'garrison_start', unitIds: [...G.selectedDivisions] });
+                        addGameLog("请点击目标城市以驻守 " + G.selectedDivisions.length + " 单位");
+                        G.garrisonMode = true;
+                        G.garrisonUnitIds = [...G.selectedDivisions];
+                        return true;
+                    }
                     // 海军只能驻守海军节点
                     let hasNavy = G.selectedDivisions.some(did => {
                         let d = G.divisions.find(x => x.id === did);
@@ -2834,6 +2905,12 @@ function handleUIClick(mx,my) {
                     return true;
                 }
                 if (b.id === "patrol_remove") {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'garrison_remove', unitIds: [...G.selectedDivisions] });
+                        addGameLog("已取消驻守");
+                        return true;
+                    }
                     for (let did of G.selectedDivisions) {
                         delete G.patrolTargets[did];
                         delete G.patrolIndex[did];
@@ -2847,6 +2924,21 @@ function handleUIClick(mx,my) {
                 let pc = G.playerCountry;
                 // Frontline button: no selectedProvince needed
                 if (b.id === "frontline") {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        if (G.frontlineGroups && G.frontlineGroups.length > 0) {
+                            MP.sendAction({ type: 'frontline_cancel' });
+                            addGameLog("所有前线已取消");
+                        } else if (G.selectedDivisions.length === 0) {
+                            addGameLog("请先选中要部署的部队");
+                        } else {
+                            G.frontlineDrawing = true;
+                            G.frontlineCmdStart = null;
+                            G.frontlineCmdEnd = null;
+                            addGameLog("在敌国边境上点击并拖动，画出指挥线方向");
+                        }
+                        return true;
+                    }
                     if (G.frontlineDrawing) {
                         G.frontlineDrawing = false;
                         G.frontlineCmdStart = null;
@@ -2874,6 +2966,21 @@ function handleUIClick(mx,my) {
                 }
                 // Navy formation buttons (no selectedProvince required)
                 if (b.id === "formation_apply") {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'formation_apply', unitIds: [...G.selectedDivisions] });
+                        let groupId = 'form_' + (G._formationGroupCounter || 0);
+                        G._formationGroupCounter = (G._formationGroupCounter || 0) + 1;
+                        for (let did of G.selectedDivisions) {
+                            let d = G.divisions.find(x => x.id === did);
+                            if (d && isSeaType(d.type)) {
+                                d.formation = 'line';
+                                d.formationGroup = groupId;
+                            }
+                        }
+                        addGameLog("海军已排列一字阵 (组" + (G._formationGroupCounter) + ")");
+                        return true;
+                    }
                     let groupId = 'form_' + (G._formationGroupCounter || 0);
                     G._formationGroupCounter = (G._formationGroupCounter || 0) + 1;
                     for (let did of G.selectedDivisions) {
@@ -2887,6 +2994,16 @@ function handleUIClick(mx,my) {
                     return true;
                 }
                 if (b.id === "formation_remove") {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'formation_remove', unitIds: [...G.selectedDivisions] });
+                        for (let did of G.selectedDivisions) {
+                            let d = G.divisions.find(x => x.id === did);
+                            if (d && isSeaType(d.type)) { d.formation = null; d.formationGroup = null; }
+                        }
+                        addGameLog("海军阵型已解除");
+                        return true;
+                    }
                     for (let did of G.selectedDivisions) {
                         let d = G.divisions.find(x => x.id === did);
                         if (d && isSeaType(d.type)) { d.formation = null; d.formationGroup = null; }
@@ -2895,6 +3012,21 @@ function handleUIClick(mx,my) {
                     return true;
                 }
                 if (b.id === "sub_dive") {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'sub_dive', unitIds: [...G.selectedDivisions] });
+                        for (let did of G.selectedDivisions) {
+                            let d = G.divisions.find(x => x.id === did);
+                            if (d && d.type === 'submarine') {
+                                d.submerged = !d.submerged;
+                                d.surfacing = !d.submerged;
+                                d.diving = d.submerged;
+                                d.diveProgress = d.submerged ? 1 : 0;
+                            }
+                        }
+                        addGameLog("潜艇正在下潜/上浮");
+                        return true;
+                    }
                     for (let did of G.selectedDivisions) {
                         let d = G.divisions.find(x => x.id === did);
                         if (d && d.type === 'submarine') {
@@ -2941,6 +3073,12 @@ function handleUIClick(mx,my) {
                 }
                 if (!co) continue;
                 if (b.id === "war" && co !== pc) {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'declare_war', target: co });
+                        addGameLog("已向Host发送宣战指令");
+                        return true;
+                    }
                     if (pc === G.playerCountry && (G.diplomacyPoints[pc] || 0) < 5) { addGameLog("外交点数不足（需要5点）"); return true; }
                     let result = declareWar(pc, co);
                     if (result !== false) {
@@ -2954,6 +3092,12 @@ function handleUIClick(mx,my) {
                     return true;
                 }
                 if (b.id === "alliance" && co !== pc) {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'alliance', target: co });
+                        addGameLog("已向Host发送同盟请求");
+                        return true;
+                    }
                     if (!isAtWar(G.playerCountry, co) && !isSameFaction(pc, co)) {
                         if (pc === G.playerCountry && (G.diplomacyPoints[pc] || 0) < 10) { addGameLog("外交点数不足（需要10点）"); return true; }
                         if (pc === G.playerCountry) G.diplomacyPoints[pc] -= 10;
@@ -3087,6 +3231,12 @@ function handleUIClick(mx,my) {
                 let city = G.selectedCity;
                 if (!city || !city.provinceId) return true;
                 if (btn.id === 'build_factory') {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'build', buildType: 'factory', province: city.provinceId, totalDays: 10, cityId: city.id, cityLon: city.lon, cityLat: city.lat });
+                        addGameLog("已向Host发送工厂建造指令");
+                        return true;
+                    }
                     if (!G.buildQueue) G.buildQueue = [];
                     let cityFactories = CITY_FACTORIES[city.id] || 0;
                     G.countries[G.playerCountry].treasury -= 50;
@@ -3094,6 +3244,12 @@ function handleUIClick(mx,my) {
                     return true;
                 }
                 if (btn.id === 'upgrade_city') {
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: 'upgrade_city', province: city.provinceId, cityId: city.id, cityLon: city.lon, cityLat: city.lat, cityName: city.name });
+                        addGameLog("已向Host发送城市升级指令");
+                        return true;
+                    }
                     G.countries[G.playerCountry].treasury -= 150;
                     if (!G.buildQueue) G.buildQueue = [];
                     G.buildQueue.push({ type: 'upgrade_city', province: city.provinceId, days: 40, totalDays: 40, cityId: city.id, cityLon: city.lon, cityLat: city.lat, cityName: city.name });
@@ -3105,6 +3261,13 @@ function handleUIClick(mx,my) {
                 if (!ut) return true;
                 let cData = G.countries[G.playerCountry];
                 let manpowerCost = ut.manpower || 10;
+                // 联机客户端：转发到Host
+                if (G.multiplayerMode === 'client') {
+                    let buildDays = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5 }[btn.id] || 20;
+                    MP.sendAction({ type: 'build', buildType: 'unit', unitType: btn.id, province: city.provinceId, totalDays: buildDays, cityId: city.id, cityLon: city.lon, cityLat: city.lat });
+                    addGameLog("已向Host发送 " + (ut.label || btn.id) + " 生产指令");
+                    return true;
+                }
                 if (!cData || cData.treasury < ut.cost || cData.manpower < manpowerCost) return true;
                 cData.treasury -= ut.cost;
                 cData.manpower -= manpowerCost;
@@ -3295,6 +3458,45 @@ function findNavalBaseAtScreen(sx, sy) {
     return best;
 }
 
+// ===== Find factory at screen position =====
+function findFactoryAtScreen(sx, sy) {
+    if (!G.factories) return null;
+    let best = null, bestDist = 18;
+    for (let fact of G.factories) {
+        if (!fact || fact.hp <= 0) continue;
+        let [tx, ty] = worldToScreen(fact.rx, fact.ry);
+        let dist = Math.hypot(sx - tx, sy - ty);
+        if (dist < bestDist) { best = fact; bestDist = dist; }
+    }
+    return best;
+}
+
+// 收集视野内可见的本国工厂
+function collectVisibleFactories(country) {
+    if (!G.factories) return [];
+    let out = [];
+    for (let fact of G.factories) {
+        if (!fact || fact.hp <= 0) continue;
+        if (country && fact.country !== country) continue;
+        let [tx, ty] = worldToScreen(fact.rx, fact.ry);
+        if (tx >= -20 && tx <= canvas.width + 20 && ty >= -20 && ty <= canvas.height + 20) out.push(fact.id);
+    }
+    return out;
+}
+
+// 收集视野内可见的本国城市
+function collectVisibleCities(country) {
+    let out = [];
+    for (let cid in G.cities) {
+        let fc = G.cities[cid];
+        if (!fc) continue;
+        if (country && fc.owner !== country) continue;
+        let [tx, ty] = worldToScreen(fc.lon, fc.lat);
+        if (tx >= -20 && tx <= canvas.width + 20 && ty >= -20 && ty <= canvas.height + 20) out.push(cid);
+    }
+    return out;
+}
+
 // ===== Event Handlers =====
 let boxStartX = 0, boxStartY = 0;
 let boxSelecting = false;
@@ -3482,6 +3684,7 @@ canvas.addEventListener("pointerup",(e)=>{
             if (G.selBox) {
                 G.selectedDivisions=[];
                 G.selectedCities = [];
+                G.selectedFactories = [];
                 G.selectedArmyGroupId = null;
                 G._cmdModal = null;
                 let x1=Math.min(G.selBox.x1,G.selBox.x2),y1=Math.min(G.selBox.y1,G.selBox.y2);
@@ -3530,6 +3733,7 @@ canvas.addEventListener("pointerup",(e)=>{
             G.selectedProvince = null;
             G.selectedCity = null;
             G.selectedDivisions = [];
+            G.selectedFactories = [];
             isDragging = false;
             return;
         }
@@ -3566,10 +3770,20 @@ canvas.addEventListener("pointerup",(e)=>{
             } else {
                 let now = Date.now();
                 if (G.lastClickedUnitId === clickedUnit.id && now - G.lastClickTime < 400) {
-                    G.selectedDivisions = G.divisions
-                        .filter(d => d.country === G.playerCountry && d.type === clickedUnit.type)
-                        .map(d => d.id);
-                    addGameLog("选中所有" + (UNIT_TYPES[clickedUnit.type]?.label || clickedUnit.type));
+                    // 双击：只选中视野内可见的同类单位
+                    G.selectedDivisions = [];
+                    for (let d of G.divisions) {
+                        if (d.country !== G.playerCountry || d.type !== clickedUnit.type) continue;
+                        let rx = d.rx !== undefined ? d.rx : null, ry = d.ry !== undefined ? d.ry : null;
+                        if (rx === null || ry === null) {
+                            let dp = G.provinceData[d.province];
+                            if (!dp || !dp.center) continue;
+                            rx = dp.center[0]; ry = dp.center[1];
+                        }
+                        let [tx, ty] = worldToScreen(rx, ry);
+                        if (tx >= -10 && tx <= canvas.width + 10 && ty >= -10 && ty <= canvas.height + 10) G.selectedDivisions.push(d.id);
+                    }
+                    addGameLog("选中视野内所有" + (UNIT_TYPES[clickedUnit.type]?.label || clickedUnit.type) + "（" + G.selectedDivisions.length + "个）");
                 } else {
                     G.selectedDivisions = [clickedUnit.id];
                 }
@@ -3587,6 +3801,7 @@ canvas.addEventListener("pointerup",(e)=>{
             G.selectedProvince=null;
             G.selectedCity=null;
             G.selectedCities = [];
+            G.selectedFactories = [];
             G.selectedNavyNodeOnMap=false;
             G.selectedArmyGroupId=null;
             G._cmdModal=null;
@@ -3627,12 +3842,64 @@ canvas.addEventListener("pointerup",(e)=>{
             }
         }
 
+        // 工厂双击：选中视野内所有本国工厂（单击继续走城市逻辑，工厂信息在城市面板里）
+        let clickedFactory = findFactoryAtScreen(sx, sy);
+        if (clickedFactory && !G.garrisonMode) {
+            let now = Date.now();
+            let isDblFact = G.lastClickedFactoryId === clickedFactory.id && now - G.lastClickFactoryTime < 400;
+            G.lastClickedFactoryId = clickedFactory.id;
+            G.lastClickFactoryTime = now;
+            if (isDblFact) {
+                G.selectedFactories = collectVisibleFactories(G.playerCountry);
+                    G.selectedCity = null;
+                    G.selectedCities = [];
+                    G.selectedDivisions = [];
+                    G.selectedFactories = [];
+                    G.selectedNavyNodeOnMap = false;
+                G.diplomacyFocus = null;
+                G.selectedArmyGroupId = null;
+                G._cmdModal = null;
+                addGameLog("选中视野内所有工厂（" + G.selectedFactories.length + "座）");
+                isDragging = false;
+                return;
+            }
+        }
+
         // 检测城市点击（优先于省份）
         let clickedCity = findCityAtScreen(sx, sy);
         if (clickedCity) {
             let cityOwner = clickedCity.country;
+            // 双击城市：选中视野内所有本国城市（驻军模式不触发）
+            if (!G.garrisonMode) {
+                let now = Date.now();
+                let isDblCity = G.lastClickedCityId === clickedCity.id && now - G.lastClickCityTime < 400;
+                G.lastClickedCityId = clickedCity.id;
+                G.lastClickCityTime = now;
+                if (isDblCity) {
+                    G.selectedFactories = [];
+                    G.selectedCities = collectVisibleCities(G.playerCountry);
+                    G.selectedCity = null;
+                    G.selectedDivisions = [];
+                    G.selectedNavyNodeOnMap = false;
+                    G.diplomacyFocus = null;
+                    G.selectedArmyGroupId = null;
+                    G._cmdModal = null;
+                    addGameLog("选中视野内所有城市（" + G.selectedCities.length + "座）");
+                    isDragging = false;
+                    return;
+                }
+            }
             // 驻军模式：选择城市作为驻军目标
             if (G.garrisonMode && G.garrisonUnitIds && G.garrisonUnitIds.length > 0) {
+                // 联机客户端：转发到Host
+                if (G.multiplayerMode === 'client') {
+                    MP.sendAction({ type: 'garrison', unitIds: [...G.garrisonUnitIds], cityId: clickedCity.id, cityLon: clickedCity.lon, cityLat: clickedCity.lat });
+                    addGameLog(G.garrisonUnitIds.length + " 单位前往驻守 " + clickedCity.name);
+                    G.garrisonMode = false;
+                    G.garrisonUnitIds = [];
+                    isDragging = false;
+                    return;
+                }
                 let cityProv = null;
                 for (let p of PROVINCES) {
                     if (p.x >= 900) continue;
@@ -3688,6 +3955,7 @@ canvas.addEventListener("pointerup",(e)=>{
             G.selectedCity = { ...clickedCity, owner: cityOwner, provinceId: cityProv };
             G.selectedDivisions = [];
             G.selectedCities = [];
+            G.selectedFactories = [];
             G.selectedNavyNodeOnMap = false;
             G.leftPanel = null; // 打开城市面板时关闭左侧面板
             selectedProvince = null;
@@ -3702,11 +3970,32 @@ canvas.addEventListener("pointerup",(e)=>{
         G.selectedCity = null;
         G.selectedNavyNodeOnMap = false;
         G.selectedCities = [];
+        G.selectedFactories = [];
         G.selectedArmyGroupId = null;
         G._cmdModal = null;
         if (G.garrisonMode && G.garrisonUnitIds && G.garrisonUnitIds.length > 0) {
             let clickedNavalBase = findNavalBaseAtScreen(sx, sy);
             if (clickedNavalBase) {
+                // 联机客户端：转发到Host
+                if (G.multiplayerMode === 'client') {
+                    let nodeId = null;
+                    for (let id in G.navyNodes) {
+                        let node = G.navyNodes[id];
+                        if (node.country === G.playerCountry &&
+                            Math.abs(node.lon - clickedNavalBase.lon) < 0.01 &&
+                            Math.abs(node.lat - clickedNavalBase.lat) < 0.01) {
+                            nodeId = id; break;
+                        }
+                    }
+                    if (nodeId) {
+                        MP.sendAction({ type: 'garrison_navy', unitIds: [...G.garrisonUnitIds], nodeId: nodeId, lon: clickedNavalBase.lon, lat: clickedNavalBase.lat, name: clickedNavalBase.name || clickedNavalBase.region });
+                        addGameLog("海军单位前往驻守 " + (clickedNavalBase.name || clickedNavalBase.region));
+                    }
+                    G.garrisonMode = false;
+                    G.garrisonUnitIds = [];
+                    isDragging = false;
+                    return;
+                }
                 // 只处理海军单位
                 let navalCount = 0;
                 let nodeId = null;
@@ -4146,6 +4435,9 @@ function initGame(countryId, isMultiHost) {
         if (typeof showTutorial === 'function') showTutorial();
     }
 }
+
+// 预加载单位像素图片
+if (typeof preloadUnitImages === 'function') preloadUnitImages();
 
 camX=10;camY=51;zoom=0.5;
 addGameLog("Game started");

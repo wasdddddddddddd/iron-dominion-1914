@@ -384,18 +384,22 @@ function drawSelection() {
     if (G.selectedCity) {
         let city = G.selectedCity;
         let [sx, sy] = worldToScreen(city.lon, city.lat);
+        let isCap = city.isCapital || false;
+        let isMaj = _MAJOR_CITIES.has(city.id) || (typeof isMajorCity === 'function' && isMajorCity(city.id));
+        let hlSize = isCap ? 108 : (isMaj ? 56 : 33);
+        let hlCY = sy - 10;
         if (sx > -50 && sx < canvas.width + 50 && sy > -50 && sy < canvas.height + 50) {
             ctx.shadowColor = "#4A90D9";
             ctx.shadowBlur = 16;
             ctx.strokeStyle = "#4A90D9";
             ctx.lineWidth = 3;
             ctx.beginPath();
-            ctx.arc(sx, sy, 16, 0, Math.PI * 2);
+            ctx.arc(sx, hlCY, hlSize * 0.55, 0, Math.PI * 2);
             ctx.stroke();
             ctx.shadowBlur = 0;
             ctx.fillStyle = "rgba(74,144,217,0.15)";
             ctx.beginPath();
-            ctx.arc(sx, sy, 20, 0, Math.PI * 2);
+            ctx.arc(sx, hlCY, hlSize * 0.7, 0, Math.PI * 2);
             ctx.fill();
         }
     }
@@ -543,54 +547,72 @@ function drawCities() {
         let maxHp = cityData ? cityData.maxHp : 50;
         let owner = cityData ? cityData.owner : city.country;
 
-        // 三层图标：🏛️首都 🏰较大城市 🏠小城市
-        let emoji, fontSize, nameColor;
+        // 使用像素贴图渲染城市（一战风格建筑）
+        let buildingImg = null;
+        let fontSize, nameColor;
         if (city.isCapital) {
-            emoji = "🏛️"; fontSize = 22; nameColor = "#c8a830";
+            buildingImg = BUILDING_IMAGES['capital'];
+            fontSize = 22; nameColor = "#c8a830";
         } else if (isMajor) {
-            emoji = "🏰"; fontSize = 18; nameColor = "#e8d0a0";
+            buildingImg = BUILDING_IMAGES['major'];
+            fontSize = 18; nameColor = "#e8d0a0";
         } else {
-            emoji = "🏠"; fontSize = 14; nameColor = "#e8e0d0";
+            buildingImg = BUILDING_IMAGES['small'];
+            fontSize = 14; nameColor = "#e8e0d0";
         }
 
         ctx.save();
-        ctx.font = fontSize + "px sans-serif";
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.shadowColor = "rgba(0,0,0,0.8)"; ctx.shadowBlur = 4;
-        ctx.fillText(emoji, sx, sy - 10);
-        ctx.shadowBlur = 0;
+        // 首都缩小到二分之一
+        let bImgSize = city.isCapital ? 54 : (isMajor ? 56 : 33);
+        let bCenterY = sy - 10;
+        if (buildingImg && buildingImg.width > 0) {
+            let imgSize = bImgSize;
+            let ix = sx - imgSize/2, iy = sy - 10 - imgSize/2;
+            ctx.drawImage(buildingImg, ix, iy, imgSize, imgSize);
+        } else {
+            // 后备：贴图未加载时使用emoji
+            let emoji = city.isCapital ? "🏛️" : (isMajor ? "🏰" : "🏠");
+            ctx.font = fontSize + "px sans-serif";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.shadowColor = "rgba(0,0,0,0.8)"; ctx.shadowBlur = 4;
+            ctx.fillText(emoji, sx, sy - 10);
+            ctx.shadowBlur = 0;
+        }
 
         // 选中光圈（单选或框选城市）
         let isSelCity = (G.selectedCity && G.selectedCity.id === city.id) ||
                         (G.selectedCities && G.selectedCities.indexOf(city.id) >= 0);
         if (isSelCity) {
-            ctx.beginPath(); ctx.arc(sx, sy - 10, 15, 0, Math.PI * 2);
+            let selR = bImgSize * 0.55;
+            ctx.beginPath(); ctx.arc(sx, sy - 10, selR, 0, Math.PI * 2);
             ctx.fillStyle = "rgba(200,168,48,0.10)";
             ctx.fill();
             ctx.strokeStyle = "#c8a830";
             ctx.lineWidth = 2;
             ctx.stroke();
-            ctx.beginPath(); ctx.arc(sx, sy - 10, 20, 0, Math.PI * 2);
+            ctx.beginPath(); ctx.arc(sx, sy - 10, selR * 1.35, 0, Math.PI * 2);
             ctx.strokeStyle = "rgba(200,168,48,0.3)";
             ctx.lineWidth = 1;
             ctx.stroke();
         }
 
         // City name below
-        ctx.font = city.isCapital ? "bold 11px sans-serif" : "10px sans-serif";
+        let nameY = sy - 10 + bImgSize * 0.58 + 12;
+        ctx.font = city.isCapital ? "bold 12px sans-serif" : "10px sans-serif";
         ctx.fillStyle = nameColor;
         ctx.textAlign = "center"; ctx.textBaseline = "top";
         ctx.shadowColor = "rgba(0,0,0,0.8)"; ctx.shadowBlur = 3;
-        ctx.fillText(city.name, sx, sy + 6);
+        ctx.fillText(city.name, sx, nameY);
         ctx.shadowBlur = 0;
 
         // HP bar — only show if damaged
         if (hp < maxHp) {
-            let barW = 30, barH = 4;
+            let barW = bImgSize * 0.4, barH = 4;
+            let hpY = sy - 10 + bImgSize * 0.58;
             ctx.fillStyle = "rgba(0,0,0,0.7)";
-            ctx.fillRect(sx - barW/2 - 1, sy + 19, barW + 2, barH + 2);
+            ctx.fillRect(sx - barW/2 - 1, hpY, barW + 2, barH + 2);
             ctx.fillStyle = hp > maxHp * 0.6 ? "#7a9a5a" : hp > maxHp * 0.3 ? "#c8a830" : "#b05040";
-            ctx.fillRect(sx - barW/2, sy + 20, barW * Math.max(0, hp / maxHp), barH);
+            ctx.fillRect(sx - barW/2, hpY + 1, barW * Math.max(0, hp / maxHp), barH);
         }
 
         // 占领国旗（显示在名称上方，取代小色块）— 直接调用国旗贴图（flags/ 目录 PNG）
@@ -620,11 +642,24 @@ function drawCities() {
                 ctx.fillStyle = "#6a8aaa";
                 ctx.fillRect(sx - barW/2, barY + 1, barW * progress, barH);
                 // 小图标标识
-                let icon = building.type === 'factory' ? '🏭' : (UNIT_TYPES[building.unitType] ? UNIT_TYPES[building.unitType].sym : '⚔️');
-                ctx.font = "8px sans-serif";
-                ctx.fillStyle = "rgba(200,180,150,0.7)";
-                ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-                ctx.fillText(icon, sx, barY - 2);
+                if (building.type === 'factory') {
+                    ctx.font = "8px sans-serif";
+                    ctx.fillStyle = "rgba(200,180,150,0.7)";
+                    ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+                    ctx.fillText('🏭', sx, barY - 2);
+                } else {
+                    let ut = UNIT_TYPES[building.unitType];
+                    let uimg = ut && UNIT_IMAGES[building.unitType];
+                    if (uimg && uimg.width > 0) {
+                        let isz = 10;
+                        ctx.drawImage(uimg, sx - isz/2, barY - isz - 2, isz, isz);
+                    } else {
+                        ctx.font = "8px sans-serif";
+                        ctx.fillStyle = "rgba(200,180,150,0.7)";
+                        ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+                        ctx.fillText(ut ? ut.sym : '⚔️', sx, barY - 2);
+                    }
+                }
             }
         }
 
@@ -723,11 +758,18 @@ function drawFactories() {
         let [sx, sy] = worldToScreen(fact.rx, fact.ry);
         if (sx < -50 || sx > canvas.width + 50 || sy < -50 || sy > canvas.height + 50) continue;
         ctx.save();
-        ctx.font = "16px sans-serif";
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.shadowColor = "rgba(0,0,0,0.6)"; ctx.shadowBlur = 3;
-        ctx.fillText("🏭", sx, sy);
-        ctx.shadowBlur = 0;
+        let fSize = 24;
+        let fImg = BUILDING_IMAGES['factory'];
+        if (fImg && fImg.width > 0) {
+            let fix = sx - fSize/2, fiy = sy - fSize/2;
+            ctx.drawImage(fImg, fix, fiy, fSize, fSize);
+        } else {
+            ctx.font = "16px sans-serif";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            ctx.shadowColor = "rgba(0,0,0,0.6)"; ctx.shadowBlur = 3;
+            ctx.fillText("🏭", sx, sy);
+            ctx.shadowBlur = 0;
+        }
         // HP bar — only show if damaged
         if (fact.hp < fact.maxHp) {
             let barW = 26, barH = 4;
@@ -735,6 +777,12 @@ function drawFactories() {
             ctx.fillRect(sx - barW/2 - 1, sy + 9, barW + 2, barH + 2);
             ctx.fillStyle = fact.hp > fact.maxHp * 0.6 ? "#7a9a5a" : fact.hp > fact.maxHp * 0.3 ? "#c8a830" : "#b05040";
             ctx.fillRect(sx - barW/2, sy + 10, barW * Math.max(0, fact.hp / fact.maxHp), barH);
+        }
+        // 双击选中的工厂高亮金框
+        if (G.selectedFactories && G.selectedFactories.indexOf(fact.id) >= 0) {
+            ctx.strokeStyle = "rgba(200,168,48,0.9)";
+            ctx.lineWidth = 1.5;
+            ctx.strokeRect(sx - fSize/2 - 2, sy - fSize/2 - 2, fSize + 4, fSize + 4);
         }
         ctx.restore();
     }
@@ -768,22 +816,29 @@ function drawNavalBases() {
         // 受损节点淡化颜色
         let drawColor = nodeHpRatio < 0.3 ? 'rgba(184,48,32,0.9)' : nodeHpRatio < 0.6 ? 'rgba(200,152,32,0.9)' : color;
 
-        // Anchor emoji
-        ctx.font = '18px sans-serif';
-        ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 4;
-        ctx.fillText('⚓', sx, sy);
-        ctx.shadowBlur = 0;
+        // Naval base pixel art
+        let nImg = BUILDING_IMAGES['naval'];
+        let nSize = 56;
+        if (nImg && nImg.width > 0) {
+            let nix = sx - nSize/2, niy = sy - nSize/2;
+            ctx.drawImage(nImg, nix, niy, nSize, nSize);
+        } else {
+            ctx.font = '18px sans-serif';
+            ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 4;
+            ctx.fillText('⚓', sx, sy);
+            ctx.shadowBlur = 0;
+        }
 
         // Anchor ring
-        ctx.beginPath(); ctx.arc(sx, sy, 12, 0, Math.PI * 2);
+        ctx.beginPath(); ctx.arc(sx, sy, 24, 0, Math.PI * 2);
         ctx.strokeStyle = drawColor;
         ctx.lineWidth = 2.5;
         ctx.stroke();
 
         // 节点血量条（受损时显示）
         if (nodeHpRatio < 1) {
-            let hpBarW = 26, hpBarH = 3;
-            let hpY = sy + 12;
+            let hpBarW = 40, hpBarH = 4;
+            let hpY = sy + 24;
             ctx.fillStyle = "rgba(0,0,0,0.7)";
             ctx.fillRect(sx - hpBarW/2 - 1, hpY, hpBarW + 2, hpBarH + 2);
             ctx.fillStyle = nodeHpRatio > 0.6 ? "#7a9a5a" : nodeHpRatio > 0.3 ? "#c8a830" : "#b05040";
