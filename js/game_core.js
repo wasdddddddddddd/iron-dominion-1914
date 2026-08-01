@@ -4438,6 +4438,7 @@ function initGame(countryId, isMultiHost) {
 
 // 预加载单位像素图片
 if (typeof preloadUnitImages === 'function') preloadUnitImages();
+if (typeof preloadTerrain === 'function') preloadTerrain();
 
 camX=10;camY=51;zoom=0.5;
 addGameLog("Game started");
