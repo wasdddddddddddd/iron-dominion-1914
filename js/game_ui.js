@@ -1140,14 +1140,14 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
         const br = worldToScreen(40, 36);
         ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
     }
-    // ===== 山地图层（DEM hillshade 光影 + 真实山脊线） =====
-    if (mountainReady()) {
+    // ===== 山地阴影层（hillshade，画在省份下面） =====
+    if (mountainShadeReady()) {
         const tl = worldToScreen(-10, 71);
         const br = worldToScreen(40, 36);
-        const ma = typeof MOUNTAIN_ALPHA !== 'undefined' ? MOUNTAIN_ALPHA : 1;
+        const ma = typeof MOUNTAIN_SHADE_ALPHA !== 'undefined' ? MOUNTAIN_SHADE_ALPHA : 1;
         if (ma < 1) ctx.save();
         ctx.globalAlpha = ma;
-        ctx.drawImage(window.MOUNTAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        ctx.drawImage(window.MOUNTAIN_SHADE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
         if (ma < 1) ctx.restore();
     }
 
@@ -1188,6 +1188,16 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
 
     // Blit borders + rivers cache on top of province fills
     ctx.drawImage(window._borderCache, 0, 0);
+    // ===== 山脊线层（真实山脊线，画在省份/边界之上，单位之下） =====
+    if (mountainRidgeReady()) {
+        const tl = worldToScreen(-10, 71);
+        const br = worldToScreen(40, 36);
+        const ma = typeof MOUNTAIN_RIDGE_ALPHA !== 'undefined' ? MOUNTAIN_RIDGE_ALPHA : 1;
+        if (ma < 1) ctx.save();
+        ctx.globalAlpha = ma;
+        ctx.drawImage(window.MOUNTAIN_RIDGE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        if (ma < 1) ctx.restore();
+    }
     drawGravestones();
     drawNavyGraves();
 
