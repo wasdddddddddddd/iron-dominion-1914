@@ -150,6 +150,8 @@ function drawRivers() {
 }
 
 function drawProvinces() {
+    let terAlpha = terrainReady() ? (typeof TERRAIN_FILL_ALPHA !== 'undefined' ? TERRAIN_FILL_ALPHA : 0.8) : 1;
+    if (terAlpha < 1) { ctx.save(); ctx.globalAlpha = terAlpha; }
     let isFactionView = zoom <= MIN_ZOOM * 1.5;
     let centralPowers = ['GERMANY','AUSTRIA_HUNGARY','BULGARIA','TURKEY'];
     let entente = ['FRANCE','UK','RUSSIA','SERBIA','BELGIUM','MONTENEGRO'];
@@ -233,6 +235,7 @@ function drawProvinces() {
             }
         }
     }
+    if (terAlpha < 1) ctx.restore();
 }
 
 // ---- 预计算国际边界（两国交界的粗黑线） ----
@@ -1130,6 +1133,13 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     grad.addColorStop(1, OCEAN_COLOR_BOTTOM);
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, w, h);
+
+    // ===== 地形底图（TIFF 转换，海面透明，贴在世界范围内） =====
+    if (terrainReady()) {
+        const tl = worldToScreen(-10, 71);
+        const br = worldToScreen(40, 36);
+        ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+    }
 
     // ===== Offscreen cache for static geometry =====
     let viewKey = camX.toFixed(3) + ',' + camY.toFixed(3) + ',' + zoom.toFixed(5) + ',' + w + ',' + h;

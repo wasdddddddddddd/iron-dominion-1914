@@ -125,6 +125,18 @@ function preloadUnitImages() {
     _loadAndProcess('images/building_naval.png', BUILDING_IMAGES, 'naval');
 }
 
+// ===== 地形底图（由 exportImage.tiff 转换，海面已透明） =====
+function preloadTerrain() {
+    const img = new Image();
+    img.onload = function() { window.TERRAIN_IMG = img; };
+    img.onerror = function() { console.warn('Failed to load terrain image'); window.TERRAIN_IMG = null; };
+    img.src = 'images/terrain_land.png';
+    window.TERRAIN_IMG = img;
+}
+function terrainReady() {
+    return !!(typeof window.TERRAIN_IMG !== 'undefined' && window.TERRAIN_IMG && window.TERRAIN_IMG.complete && window.TERRAIN_IMG.naturalWidth > 0);
+}
+
 // ===== 加载旗帜贴图 =====
 const FLAG_IMAGES = {};
 const FLAG_COUNTRIES = ['uk','greece','russia','spain','portugal','albania','austria','montenegro',
