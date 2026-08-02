@@ -13,7 +13,7 @@ function cmdAuraText(aura) {
     return list.map(a => {
         let label = CMD_STAT_CN[a.stat] || a.stat;
         let v = a.value || 0;
-        let sign = v < 0 ? '-' : (a.stat === 'logi' ? '-' : '+');
+        let sign = v < 0 ? '-' : '+';
         return label + sign + cmdPct(Math.abs(v));
     }).join('/');
 }
@@ -23,7 +23,7 @@ function cmdStatsText(cmdr, withLogiMinus) {
     if (cmdr.atk) parts.push('攻击+' + cmdPct(cmdr.atk));
     if (cmdr.hp) parts.push('血量+' + cmdPct(cmdr.hp));
     if (cmdr.spd) parts.push('移速+' + cmdPct(cmdr.spd));
-    if (cmdr.logi) parts.push('后勤-' + cmdPct(cmdr.logi));
+    if (cmdr.logi) parts.push('后勤+' + cmdPct(cmdr.logi));
     return parts.length > 0 ? parts.join(' ') : '无加成';
 }
 

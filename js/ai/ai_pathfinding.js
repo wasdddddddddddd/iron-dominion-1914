@@ -652,8 +652,12 @@ moveUnits = function(days) {
         let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
         let spd = ut.speed * ed * 2.5;
 
-        // ===== 水中央倒退（不瞬移） =====
-        if (!_onLandGrid(d.rx, d.ry)) {
+        // ===== 补给惩罚（断粮/短缺） =====
+        if (d.supplyStatus === 'starve' && typeof GRAIN_STARVE !== 'undefined') spd *= GRAIN_STARVE.speed;
+        else if (d.supplyStatus === 'low' && typeof GRAIN_LOW !== 'undefined') spd *= GRAIN_LOW.speed;
+
+        // ===== 水中央倒退（不瞬移）——空军可飞越水域，跳过 =====
+        if (!_onLandGrid(d.rx, d.ry) && d.type !== 'airplane') {
             if (!d._retreatDir) {
                 // 第一次入海：记住来路方向
                 let bx = d._prevX || d.rx, by = d._prevY || d.ry;
@@ -676,7 +680,8 @@ moveUnits = function(days) {
             d._retreatDir = undefined;
         }
 
-        if (!_onLandGrid(d.targetX, d.targetY)) {
+        // 目标在水上：陆军修正到最近陆地；空军直接飞过去
+        if (!_onLandGrid(d.targetX, d.targetY) && d.type !== 'airplane') {
             let nl = nearestLand(d._finalTargetX || d.targetX, d._finalTargetY || d.targetY);
             if (nl) { d._finalTargetX = nl[0]; d._finalTargetY = nl[1]; d.targetX = nl[0]; d.targetY = nl[1]; }
             else { d.state = 'idle'; continue; }
@@ -702,8 +707,8 @@ moveUnits = function(days) {
             }
         }
 
-        // ===== 海岸减速 =====
-        if (gPF && gPF.cost && _onLandGrid(d.rx, d.ry)) {
+        // ===== 海岸减速（空军无视） =====
+        if (d.type !== 'airplane' && gPF && gPF.cost && _onLandGrid(d.rx, d.ry)) {
             let cx = lon2c(d.rx), cy = lat2c(d.ry);
             if (cx >= 0 && cx < gPF.cols && cy >= 0 && cy < gPF.rows) {
                 let c = gPF.cost[cy * gPF.cols + cx];
@@ -713,11 +718,23 @@ moveUnits = function(days) {
             }
         }
 
+        // ===== 山地减速（按兵种，山地师团几乎免疫；空军无视地形） =====
+        if (d.type !== 'airplane' && typeof terrainAt === 'function') {
+            let _t = terrainAt(d.rx, d.ry);
+            if (_t === 'mountains') {
+                let _mv = (typeof MOUNTAIN_MOVE_BY_TYPE !== 'undefined' && MOUNTAIN_MOVE_BY_TYPE[d.type]) ? MOUNTAIN_MOVE_BY_TYPE[d.type] : ((typeof TERRAIN_MOVE !== 'undefined' && TERRAIN_MOVE.mountains) || 0.55);
+                spd *= _mv;
+            } else if (_t === 'flat' && typeof TERRAIN_MOVE !== 'undefined' && TERRAIN_MOVE.flat) {
+                spd *= TERRAIN_MOVE.flat;
+            }
+        }
+
         // ===== 移动 =====
         let dx = d.targetX - d.rx, dy = d.targetY - d.ry;
         let dist = Math.hypot(dx, dy);
         if (dist > spd) { d.rx += (dx / dist) * spd; d.ry += (dy / dist) * spd; }
         else { d.rx = d.targetX; d.ry = d.targetY; d.state = 'idle'; d.targetX = null; d.targetY = null; d.path = null; }
+        d.moveDx = dx;
         // 更新朝向
         if (Math.abs(dx) > Math.abs(dy)) {
             d.facing = dx > 0 ? 'e' : 'w';
@@ -725,8 +742,8 @@ moveUnits = function(days) {
             d.facing = dy > 0 ? 's' : 'n';
         }
 
-        // ===== 外交边界检查（陆军禁止越界） =====
-        if (gPF && gPF.owner) {
+        // ===== 外交边界检查（陆军禁止越界；空军飞越国界） =====
+        if (d.type !== 'airplane' && gPF && gPF.owner) {
             let cx = lon2c(d.rx), cy = lat2c(d.ry);
             if (cx >= 0 && cx < gPF.cols && cy >= 0 && cy < gPF.rows) {
                 let ownerProv = gPF.owner[cy * gPF.cols + cx];
@@ -761,6 +778,7 @@ moveUnits = function(days) {
 
     // 6c2. 海军/潜艇移动（结构与陆军对称，但水/陆逻辑相反）
     for (let d of G.divisions) {
+        if (d.formation === 'line') continue; // 一字阵由 6c3 整队驱动
         if (typeof isSeaType === 'function' ? !isSeaType(d.type) : d.type !== 'navy') continue;
         if (d.state !== 'moving' || d.targetX === null) continue;
         if (d.rx === undefined) continue;
@@ -831,6 +849,7 @@ moveUnits = function(days) {
         let dist = Math.hypot(dx, dy);
         if (dist > spd) { d.rx += (dx / dist) * spd; d.ry += (dy / dist) * spd; }
         else { d.rx = d.targetX; d.ry = d.targetY; d.state = 'idle'; d.targetX = null; d.targetY = null; d.path = null; }
+        d.moveDx = dx;
         // 更新朝向（海军）
         if (Math.abs(dx) > Math.abs(dy)) {
             d.facing = dx > 0 ? 'e' : 'w';
@@ -850,7 +869,7 @@ moveUnits = function(days) {
         d._prevX = d.rx; d._prevY = d.ry;
     }
 
-    // 6c3. 一字阵型（原版在 _origMoveUnits 内，但 6b 恢复了位置，在此重做）
+    // 6c3. 一字阵型：阵线朝向固定、无命令静止不动、新船补两端、移动时整队平移
     let formDivs = G.divisions.filter(d => d.formation === 'line' && (typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy'));
     if (formDivs.length > 1) {
         let groups = {};
@@ -859,48 +878,80 @@ moveUnits = function(days) {
             if (!groups[gid]) groups[gid] = [];
             groups[gid].push(d);
         }
+        let metaMap = window._formMetaMap || (window._formMetaMap = {});
         for (let gid in groups) {
             let group = groups[gid];
             if (group.length < 2) continue;
-            let avgDx = 0, avgDy = 0, count = 0;
-            for (let d of group) {
-                if (d.targetX !== null) { avgDx += d.targetX - d.rx; avgDy += d.targetY - d.ry; count++; }
-            }
-            if (count === 0) {
-                if (group[0]._lastMoveDx !== undefined) {
-                    avgDx = group[0]._lastMoveDx; avgDy = group[0]._lastMoveDy;
-                } else { avgDx = 1; avgDy = 0; }
-            }
-            let dirLen = Math.hypot(avgDx, avgDy);
-            if (dirLen > 0.001) {
-                avgDx /= dirLen; avgDy /= dirLen;
-                for (let d of group) { d._lastMoveDx = avgDx; d._lastMoveDy = avgDy; }
-                let perpX = -avgDy, perpY = avgDx;
-                let spacing = 0.12;
-                let half = (group.length - 1) / 2;
-                let anchorX = 0, anchorY = 0;
-                for (let d of group) { anchorX += d.rx; anchorY += d.ry; }
-                anchorX /= group.length; anchorY /= group.length;
-                group.sort((a, b) => {
-                    let projA = (a.rx - anchorX) * perpX + (a.ry - anchorY) * perpY;
-                    let projB = (b.rx - anchorX) * perpX + (b.ry - anchorY) * perpY;
-                    return projA - projB;
+            // 阵型元数据：阵线方向（垂直前进方向）跨帧固定
+            let g = metaMap[gid];
+            if (!g) {
+                let avgDx = 0, avgDy = 0, cnt = 0;
+                for (let d of group) {
+                    if (d.targetX !== null) { avgDx += d.targetX - d.rx; avgDy += d.targetY - d.ry; cnt++; }
+                }
+                if (cnt === 0) {
+                    if (group[0]._lastMoveDx !== undefined) { avgDx = group[0]._lastMoveDx; avgDy = group[0]._lastMoveDy; }
+                    else { avgDx = 1; avgDy = 0; }
+                }
+                let dl = Math.hypot(avgDx, avgDy);
+                if (dl < 0.001) { avgDx = 1; avgDy = 0; }
+                else { avgDx /= dl; avgDy /= dl; }
+                g = metaMap[gid] = { dirX: -avgDy, dirY: avgDx };
+                // 惰性分配 formationIndex：沿阵线方向排序，中心为 0、奇数步长（offset = idx*spacing/2）
+                let ax = 0, ay = 0;
+                for (let d of group) { ax += d.rx; ay += d.ry; }
+                ax /= group.length; ay /= group.length;
+                let order = group.slice().sort((a, b) => {
+                    let pa = (a.rx - ax) * g.dirX + (a.ry - ay) * g.dirY;
+                    let pb = (b.rx - ax) * g.dirX + (b.ry - ay) * g.dirY;
+                    return pa - pb;
                 });
-                for (let i = 0; i < group.length; i++) {
-                    let d = group[i];
-                    let offset = (i - half) * spacing;
-                    let targetX = anchorX + perpX * offset, targetY = anchorY + perpY * offset;
-                    let dx = targetX - d.rx, dy = targetY - d.ry;
-                    let dist = Math.hypot(dx, dy);
-                    if (dist > 0.001) {
-                        let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
-                        let spd = ut.speed * ed * 2.5;
-                        if ((typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy') && d.navySpd !== undefined) spd = d.navySpd * ed * 2.5;
-                        spd *= 2;
-                        if (dist > spd) { d.rx += (dx / dist) * spd; d.ry += (dy / dist) * spd; }
-                        else { d.rx = targetX; d.ry = targetY; }
+                order.forEach((d, i) => d.formationIndex = i * 2 - (order.length - 1));
+            }
+            // 新成员补两端（优先补人少的一侧，绝不插中间）
+            for (let d of group) {
+                if (d.formationIndex === undefined || d.formationIndex === null) {
+                    let idxs = group.filter(x => x.formationIndex !== undefined && x.formationIndex !== null).map(x => x.formationIndex);
+                    if (idxs.length === 0) { d.formationIndex = 0; continue; }
+                    let left = idxs.filter(i => i < 0).length, right = idxs.filter(i => i > 0).length;
+                    let mn = Math.min(...idxs), mx = Math.max(...idxs);
+                    d.formationIndex = left <= right ? mn - 2 : mx + 2;
+                }
+            }
+            // 无移动命令：保持一字阵静止，不强制归位
+            let movers = group.filter(d => d.targetX !== null);
+            if (movers.length === 0) continue;
+            // 锚船 = 居中的舰（|formationIndex| 最小）；命令点取锚船或任一移动船
+            let anchor = group.slice().sort((a, b) => Math.abs(a.formationIndex) - Math.abs(b.formationIndex))[0];
+            let leader = movers.includes(anchor) ? anchor : movers[0];
+            let tgtX = leader.targetX, tgtY = leader.targetY;
+            let spacing = 0.12;
+            let allArrived = true;
+            for (let d of group) {
+                // 各船目标 = 锚船命令点 + 保持相对阵线偏移（整体平移，阵线朝向不变）
+                let relOff = (d.formationIndex - anchor.formationIndex) * spacing / 2;
+                let targetX = tgtX + g.dirX * relOff;
+                let targetY = tgtY + g.dirY * relOff;
+                let dx = targetX - d.rx, dy = targetY - d.ry;
+                let dist = Math.hypot(dx, dy);
+                if (dist > 0.001) {
+                    let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
+                    let spd = ut.speed * ed * 2.5;
+                    if ((typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy') && d.navySpd !== undefined) spd = d.navySpd * ed * 2.5;
+                    spd *= 2;
+                    if (dist > spd) {
+                        d.rx += (dx / dist) * spd; d.ry += (dy / dist) * spd;
+                        allArrived = false;
+                        if (Math.abs(dx) > Math.abs(dy)) d.facing = dx > 0 ? 'e' : 'w';
+                        else d.facing = dy > 0 ? 's' : 'n';
+                    } else {
+                        d.rx = targetX; d.ry = targetY;
                     }
                 }
+            }
+            // 整队到位：清除命令，保持一字阵静止
+            if (allArrived) {
+                for (let d of movers) { d.targetX = null; d.targetY = null; d.state = 'idle'; d.path = null; }
             }
         }
     }

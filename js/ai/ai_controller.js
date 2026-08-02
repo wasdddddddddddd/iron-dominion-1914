@@ -147,6 +147,31 @@ function aiEconomy(co, cd, pers) {
             G.buildQueue.push({ type: 'upgrade_city', province: city.id, days: 40, totalDays: 40, cityId: city.id, cityLon: city.lon, cityLat: city.lat, cityName: city.name });
         }
     }
+
+    // AI 升级小城市粮食产量（金钱充足时，优先前线/接近敌国城市的小城市）
+    if (cd.treasury > ((typeof GRAIN_UPGRADE_COST !== 'undefined') ? GRAIN_UPGRADE_COST : 100) * 3 && Math.random() < (atWar ? 0.15 : 0.10)) {
+        let grainCands = [];
+        for (let cid in G.cities) {
+            let ct = G.cities[cid];
+            if (ct.owner !== co || ct.cityType !== 'small' || ct.grainUpgraded || ct.grainUpgradeProgress > 0) continue;
+            let score = 10;
+            for (let ec in G.cities) {
+                let ec2 = G.cities[ec];
+                if (!ec2 || ec2.owner === co) continue;
+                let _d = Math.hypot(ct.lon - ec2.lon, ct.lat - ec2.lat);
+                if (_d < 3) score += 20;
+                else if (_d < 6) score += 8;
+            }
+            grainCands.push({ city: ct, score: score });
+        }
+        grainCands.sort((a, b) => b.score - a.score);
+        if (grainCands.length > 0) {
+            let gc = grainCands[0].city;
+            cd.treasury -= (typeof GRAIN_UPGRADE_COST !== 'undefined') ? GRAIN_UPGRADE_COST : 100;
+            gc.grainUpgradeProgress = (typeof GRAIN_UPGRADE_DAYS !== 'undefined') ? GRAIN_UPGRADE_DAYS : 30;
+            addGameLog(COUNTRY_CN[co] + " 开始升级 " + gc.name + " 粮食产量（" + ((typeof GRAIN_UPGRADE_DAYS !== 'undefined') ? GRAIN_UPGRADE_DAYS : 30) + "天）");
+        }
+    }
 }
 
 // ========== 2. 生产工厂军队 ==========
@@ -188,6 +213,14 @@ function aiProduction(co, cd, pers) {
         let trainChance = inDanger ? 0.90 : atWar ? 0.60 : 0.15;
         // 国库充裕进一步加码
         if (cd.treasury > 400) trainChance = Math.min(0.95, trainChance * 1.3);
+        // 粮食压力：净产为负时压低训练概率，避免粮食崩盘
+        if (typeof unitGrainPerMonth === 'function') {
+            let _prod = 0, _cons = 0;
+            for (let cid in G.cities) { let c = G.cities[cid]; if (c.owner === co) _prod += (c.grainPerMonth || 0); }
+            for (let d of G.divisions) { if (d.country === co) _cons += unitGrainPerMonth(d); }
+            let _net = _prod - _cons;
+            if (_net < 0) trainChance = Math.max(0.05, trainChance * Math.max(0.3, 1 + _net / 500));
+        }
         // 法国战时加成
         if (co === 'FRANCE' && atWar) trainChance = Math.min(0.95, trainChance + 0.15);
 
@@ -204,12 +237,12 @@ function aiProduction(co, cd, pers) {
         if (atWar) { artilleryRatio += 0.20; engineerRatio += 0.08; }
 
         // 根据敌方构成调整
-        let enemyTypes = {infantry:0,engineer:0,cavalry:0,artillery:0,navy:0};
+        let enemyTypes = {infantry:0,engineer:0,cavalry:0,artillery:0,mountain:0,airplane:0,navy:0};
         for (let e of G.divisions) {
             if (e.strength <= 0 || !atWarWithList.includes(e.country)) continue;
             enemyTypes[e.type] = (enemyTypes[e.type] || 0) + 1;
         }
-        let eTotal = enemyTypes.infantry + enemyTypes.engineer + enemyTypes.cavalry + enemyTypes.artillery;
+        let eTotal = enemyTypes.infantry + enemyTypes.engineer + enemyTypes.cavalry + enemyTypes.artillery + enemyTypes.mountain + enemyTypes.airplane;
         if (eTotal > 0) {
             let eCavR = enemyTypes.cavalry / eTotal;
             let eArtR = enemyTypes.artillery / eTotal;
@@ -232,6 +265,8 @@ function aiProduction(co, cd, pers) {
         if (cd.treasury >= ut.engineer.cost && cd.manpower >= (ut.engineer.manpower || 10)) affordable.push('engineer');
         if (cd.treasury >= ut.cavalry.cost && cd.manpower >= (ut.cavalry.manpower || 10)) affordable.push('cavalry');
         if (cd.treasury >= ut.artillery.cost && cd.manpower >= (ut.artillery.manpower || 10)) affordable.push('artillery');
+        if (cd.treasury >= ut.mountain.cost && cd.manpower >= (ut.mountain.manpower || 10)) affordable.push('mountain');
+        if (cd.treasury >= ut.airplane.cost && cd.manpower >= (ut.airplane.manpower || 10)) affordable.push('airplane');
 
         if (affordable.length === 0) break;
 
@@ -240,6 +275,8 @@ function aiProduction(co, cd, pers) {
             engineer: Math.max(0, engineerRatio - myEngineer / total),
             cavalry: Math.max(0, cavalryRatio - myCavalry / total),
             artillery: Math.max(0, artilleryRatio - myArtillery / total),
+            mountain: 0,
+            airplane: 0,
         };
 
         let maxDeficit = 0;
@@ -270,7 +307,7 @@ function aiProduction(co, cd, pers) {
             }
         }
         if (aiCity && cd.treasury >= UNIT_TYPES[type].cost) {
-            let buildDays = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5 }[type] || 20;
+            let buildDays = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5, mountain: 3, airplane: 15 }[type] || 20;
             let mc = UNIT_TYPES[type].manpower || 10;
             if (cd.manpower >= mc) {
                 cd.treasury -= UNIT_TYPES[type].cost;
@@ -1023,6 +1060,8 @@ function aiAttackMovement(allCountries) {
                 let dist = Math.hypot(dx, dy);
                 let score = dist;
                 if (ct.isCapital) score -= 8;
+                // 农业城市优先攻击（粮食资源）
+                if (ct.cityType === 'agri') score -= 6;
                 else if (isMajorCity(ct.id)) {
                     let cf = typeof CITY_FACTORIES !== 'undefined' ? (CITY_FACTORIES[ct.id] || 0) : 0;
                     score -= 4 + cf * 2;

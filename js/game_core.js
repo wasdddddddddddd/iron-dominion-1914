@@ -4,6 +4,11 @@ let triggeredEvents = new Set();
 let eventHistory = [];
 let saveSlots = [];
 let showSavePanel = false;
+// 省份空间网格（0.1°）：按 bbox 预建索引，getProvinceAt/isLandPoint 从 O(省份数) 降到 O(候选数)
+// 声明必须在 initNavGrid() 之前（initNavGrid 顶层调用 isLandPoint → provCandidates，let 有 TDZ）
+let PROV_GRID_CELL = 0.1;
+let PROV_GRID = null;
+let PROVINCE_BY_ID = null;
 // ===== Initialize =====
 try {
 initProvinceData();
@@ -111,7 +116,9 @@ function findSeaPosition(lon, lat) {
 
 function isSeaType(type) { return type === 'navy' || type === 'submarine'; }
 // 海军闪避率：机动=闪避子弹率，普通船基准 5%，其他品级按机动加成加减（5% + 机动加成，最低 0）
+// 空军固定 45%（空中单位机动高，但可被地面火力反制）
 function navyDodgeRate(d) {
+    if (d.type === 'airplane') return 0.45;
     if (d.navyMvr === undefined) return 0;
     return Math.max(0, 0.05 + (d.navyMvr || 0));
 }
@@ -153,6 +160,191 @@ for (let co of allCo) {
             if (!G.militaryAccess[co]) G.militaryAccess[co] = {};
             G.militaryAccess[co][other] = true;
         }
+    }
+}
+
+// ===== 铁路系统（段 = 城市对，城市为铁路节点） =====
+function railwayKey(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
+function railwayExists(a, b) { return !!(G.railways && G.railways[railwayKey(a, b)]); }
+// 该铁路段当前是否可被 country 使用（两端城市归属：己方/盟国）
+function railwayUsable(a, b, country) {
+    if (!railwayExists(a, b)) return false;
+    let cA = G.cities[a], cB = G.cities[b];
+    if (!cA || !cB) return false;
+    let oa = cA.owner !== undefined ? cA.owner : cA.country;
+    let ob = cB.owner !== undefined ? cB.owner : cB.country;
+    let ok = c => c === country ||
+        !!(G.alliances[country] && G.alliances[country][c]) ||
+        !!(G.militaryAccess[country] && G.militaryAccess[country][c]);
+    return ok(oa) && ok(ob);
+}
+// 城市 → 沿己方可用的铁路段 BFS 可达的所有城市（补给链/运兵用）
+function railwayReachableCities(fromCityId, country) {
+    let seen = new Set([fromCityId]);
+    let q = [fromCityId];
+    while (q.length) {
+        let cur = q.pop();
+        for (let key in G.railways) {
+            let sep = key.indexOf('|');
+            let a = key.slice(0, sep), b = key.slice(sep + 1);
+            if (a !== cur && b !== cur) continue;
+            let nb = a === cur ? b : a;
+            if (seen.has(nb)) continue;
+            if (!railwayUsable(cur, nb, country)) continue;
+            seen.add(nb);
+            q.push(nb);
+        }
+    }
+    return seen;
+}
+
+// ===== 铁路运兵系统 =====
+// 所有铁路段的端点城市集合（惰性缓存）
+let _railNodeSetCache = null;
+function railCitySet() {
+    if (_railNodeSetCache) return _railNodeSetCache;
+    _railNodeSetCache = new Set();
+    for (let key in (G.railways || {})) {
+        let sep = key.indexOf('|');
+        _railNodeSetCache.add(key.slice(0, sep));
+        _railNodeSetCache.add(key.slice(sep + 1));
+    }
+    return _railNodeSetCache;
+}
+// 城市是否有至少一条己方/盟国可用铁路段
+function railCityUsable(cid, country) {
+    let set = railCitySet();
+    if (!set.has(cid)) return false;
+    for (let key in G.railways) {
+        let sep = key.indexOf('|');
+        let a = key.slice(0, sep), b = key.slice(sep + 1);
+        if ((a === cid || b === cid) && railwayUsable(a, b, country)) return true;
+    }
+    return false;
+}
+// 铁路路径（BFS 记录前驱）：返回 [fromCity, ..., toCity]，不可达返回 null
+function railwayPath(fromCityId, toCityId, country) {
+    if (fromCityId === toCityId) return [fromCityId];
+    let prev = Object.create(null);
+    prev[fromCityId] = null;
+    let q = [fromCityId], qi = 0;
+    while (qi < q.length) {
+        let cur = q[qi++];
+        if (cur === toCityId) break;
+        for (let key in G.railways) {
+            let sep = key.indexOf('|');
+            let a = key.slice(0, sep), b = key.slice(sep + 1);
+            if (a !== cur && b !== cur) continue;
+            let nb = a === cur ? b : a;
+            if (prev[nb] !== undefined) continue;
+            if (!railwayUsable(cur, nb, country)) continue;
+            prev[nb] = cur;
+            q.push(nb);
+        }
+    }
+    if (prev[toCityId] === undefined) return null;
+    let path = [], cur = toCityId;
+    while (cur !== null) { path.push(cur); cur = prev[cur]; }
+    path.reverse();
+    return path;
+}
+// 部队出发前：找到最近的可用铁路站
+function railNearestStation(rx, ry, country) {
+    let best = null, bestD = Infinity;
+    for (let cid of railCitySet()) {
+        let c = G.cities[cid];
+        if (!c || !railCityUsable(cid, country)) continue;
+        let dd = Math.hypot(c.lon - rx, c.lat - ry);
+        if (dd < bestD) { bestD = dd; best = cid; }
+    }
+    return best;
+}
+// 铁路段运兵速度倍率（山地段只有平地段一半）
+function railSegmentMult(a, b) {
+    let isMtn = (typeof railwayIsMountain === 'function') ? railwayIsMountain(railwayKey(a, b)) : false;
+    return isMtn ? RAIL_MOUNTAIN_MULT : RAIL_SPEED_MULT;
+}
+// 铁路段运兵 ETA（天）：距离km / 车速km/天
+function railSegmentEtaDays(a, b, unitSpeed) {
+    let cA = G.cities[a], cB = G.cities[b];
+    if (!cA || !cB) return 0;
+    let km = Math.hypot(cB.lon - cA.lon, cB.lat - cA.lat) * (KM_PER_DEG || 111);
+    let kmPerDay = unitSpeed * 2.5 * railSegmentMult(a, b) * (KM_PER_DEG || 111);
+    return kmPerDay > 0 ? km / kmPerDay : 0;
+}
+// 取消铁路运兵（下车）。quiet=true 时不写日志（正常到站）
+function cancelRailTrip(d, msg, quiet) {
+    d.railTrip = null;
+    if (!quiet) {
+        d.state = 'idle'; d.targetX = null; d.targetY = null; d.path = null;
+        if (msg) addGameLog((d.name || "部队") + " " + msg);
+    }
+}
+// 发起铁路运兵：单位先步行到起点站，再沿铁路网乘车至目的站
+// fromCityId 为 null 时，每个单位各自寻找最近的可用车站在上车（多选分散时各自就近）
+function startRailTrip(unitIds, fromCityId, toCityId) {
+    let to = G.cities[toCityId];
+    if (!to) { addGameLog("铁路运兵失败：目标城市不存在"); return; }
+    // 运费：按兵种单价 × 每支部队（先算总价，不足不发车）
+    let costMap = (typeof RAIL_TRIP_COST !== 'undefined') ? RAIL_TRIP_COST : {};
+    let totalCost = 0;
+    let candidates = [];
+    for (let id of unitIds) {
+        let d = G.divisions.find(x => x.id === id);
+        if (!d || isSeaType(d.type) || d.type === 'airplane') continue;
+        if (d.country !== G.playerCountry || d.railTrip) continue;
+        candidates.push(d);
+        totalCost += (costMap[d.type] !== undefined ? costMap[d.type] : 25);
+    }
+    if (candidates.length === 0) { addGameLog("没有可出发的陆军部队"); return; }
+    let treasury = G.countries && G.countries[G.playerCountry] ? G.countries[G.playerCountry].treasury : 0;
+    if (treasury < totalCost) {
+        addGameLog("金币不足：铁路运兵需 $" + totalCost + "（当前 $" + Math.floor(treasury) + "）");
+        return;
+    }
+    let launched = 0;
+    for (let d of candidates) {
+        // 每个单位各自找最近可用车站
+        let fromId = fromCityId;
+        if (fromId) {
+            if (!railCityUsable(fromId, d.country)) { addGameLog("起点站无可用铁路"); continue; }
+        } else {
+            fromId = railNearestStation(d.rx, d.ry, d.country);
+            if (!fromId) { addGameLog((d.name || "部队") + " 附近无可用铁路站，无法乘车"); continue; }
+        }
+        let from = G.cities[fromId];
+        let p = railwayPath(fromId, toCityId, d.country);
+        if (!p || p.length < 2) { addGameLog("无法乘火车从 " + from.name + " 到 " + to.name); continue; }
+        d.railTrip = { from: fromId, to: toCityId, path: null, stage: 'walk_to_station', seg: 0 };
+        d.state = 'moving';
+        d.path = null; d.pathIndex = 0;
+        d.focusTarget = null; d.focusCity = null; d.focusFactory = null;
+        // 步行接驳用省份寻路（避免直线穿越敌国边界被拦下）
+        let sProv = getProvinceAt(d.rx, d.ry);
+        let eProv = getProvinceAt(from.lon, from.lat);
+        let walkOk = false;
+        if (sProv && eProv && sProv !== eProv && typeof findProvincePath === 'function') {
+            let wpath = findProvincePath(sProv, eProv, d.country);
+            if (wpath && wpath.length > 0) {
+                let path = [];
+                for (let i = 1; i < wpath.length; i++) {
+                    let pid = wpath[i];
+                    let pp = PROVINCES.find(x => x.id === pid);
+                    if (pp && pp.x < 900) path.push({ x: pp.x, y: pp.y });
+                }
+                if (path.length > 0) { d.path = path; d.pathIndex = 0; d.targetX = path[0].x; d.targetY = path[0].y; walkOk = true; }
+            }
+        }
+        if (!walkOk) { d.targetX = from.lon; d.targetY = from.lat; }
+        d._finalTargetX = from.lon; d._finalTargetY = from.lat;
+        d._finalTargetProv = eProv;
+        launched++;
+    }
+    if (launched > 0) {
+        G.countries[G.playerCountry].treasury -= totalCost;
+        addGameLog("🚂 " + launched + " 支部队出发（各自就近上车，运费 $" + totalCost + "） → " + to.name);
+    } else {
+        addGameLog("没有可出发的陆军部队");
     }
 }
 
@@ -371,7 +563,11 @@ function updateGame(dtMs) {
     if (days<0.001) days=0.001;
     G.tick++;
     G.date.setTime(G.date.getTime()+days*86400000);
-    if (G.tick%Math.max(1,Math.floor(3/days))===0) updateEconomy(days);
+    // 经济/口粮按累计游戏天数结算（每3天一次），避免原 tick%floor(3/days) 只扣当帧天数的bug
+    G.ecoAccum=(G.ecoAccum||0)+days;
+    G.grainAccum=(G.grainAccum||0)+days;
+    if (G.ecoAccum>=3){ updateEconomy(G.ecoAccum); G.ecoAccum=0; }
+    if (G.grainAccum>=3){ updateGrain(G.grainAccum); G.grainAccum=0; }
     updateDivisions(days);
     updateNeutralCityCapture(days);
     updateFireZones(days);
@@ -435,8 +631,31 @@ function updateGame(dtMs) {
     }
 }
 
+// 省份空间网格：buildProvGrid 构建（声明见文件顶部，避免 initNavGrid 顶层调用时的 TDZ 错误）
+function buildProvGrid() {
+    PROV_GRID = Object.create(null);
+    PROVINCE_BY_ID = new Map();
+    for (let p of PROVINCES) {
+        if (p.id !== undefined) PROVINCE_BY_ID.set(p.id, p);
+        if (p.x >= 900) continue;
+        let bb = PROVINCE_BBOX[p.id];
+        if (!bb) continue;
+        for (let gx = Math.floor(bb.minX / PROV_GRID_CELL); gx <= Math.floor(bb.maxX / PROV_GRID_CELL); gx++) {
+            for (let gy = Math.floor(bb.minY / PROV_GRID_CELL); gy <= Math.floor(bb.maxY / PROV_GRID_CELL); gy++) {
+                let k = gx + ',' + gy;
+                (PROV_GRID[k] || (PROV_GRID[k] = [])).push(p);
+            }
+        }
+    }
+}
+function provCandidates(x, y) {
+    if (!PROV_GRID) buildProvGrid();
+    return PROV_GRID[Math.floor(x / PROV_GRID_CELL) + ',' + Math.floor(y / PROV_GRID_CELL)] || null;
+}
+
 function canEnterProvince(provinceId, country) {
-    let prov = PROVINCES.find(p => p.id === provinceId);
+    if (!PROVINCE_BY_ID) buildProvGrid();
+    let prov = PROVINCE_BY_ID.get(provinceId);
     if (!prov) return false;
     // 海洋地块（x>=900）对所有国家自由通行，不受外交限制
     if (prov.x >= 900) return true;
@@ -456,8 +675,9 @@ function canEnterProvince(provinceId, country) {
 }
 
 function getProvinceAt(x, y) {
-    for (let p of PROVINCES) {
-        if (p.x >= 900) continue;
+    let cell = provCandidates(x, y);
+    if (!cell) return null;
+    for (let p of cell) {
         let bb = PROVINCE_BBOX[p.id];
         if (!bb) continue;
         if (x < bb.minX || x > bb.maxX || y < bb.minY || y > bb.maxY) continue;
@@ -478,8 +698,38 @@ outer: for (let d of G.divisions) {
             if(c&&c.center){d.rx=c.center[0];d.ry=c.center[1];}
         }
         if ((d.state==='moving'||d.state==='retreating')&&d.targetX!==null) {
-            // 海洋封锁：陆军禁止下海
-            if (!isSeaType(d.type) && typeof isOceanPoint === 'function') {
+            // ===== 铁路运兵：乘车阶段（在车厢内，沿铁路网快速移动，不可开火） =====
+            if (d.railTrip && d.railTrip.stage === 'on_train') {
+                let rt = d.railTrip;
+                let a = rt.path[rt.seg], b = rt.path[rt.seg + 1];
+                if (b === undefined) { cancelRailTrip(d, null, true); continue outer; }
+                // 铁路被切断（城市易主/段被摧毁）→ 立即下车
+                if (!railwayUsable(a, b, d.country)) { cancelRailTrip(d, "铁路中断，已下车（" + d.name + "）"); continue outer; }
+                let cB = G.cities[b];
+                let ut2 = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
+                let spd = ut2.speed * effectiveDays * 2.5 * railSegmentMult(a, b);
+                let dx = cB.lon - d.rx, dy = cB.lat - d.ry;
+                let dist = Math.hypot(dx, dy);
+                if (dist > spd) {
+                    d.rx += dx / dist * spd; d.ry += dy / dist * spd;
+                    d.moveDx = dx;
+                    d.facing = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'e' : 'w') : (dy > 0 ? 's' : 'n');
+                } else {
+                    d.rx = cB.lon; d.ry = cB.lat;
+                    rt.seg++;
+                    if (rt.seg >= rt.path.length - 1) {
+                        let toName = G.cities[rt.to] ? G.cities[rt.to].name : "";
+                        cancelRailTrip(d, null, true);
+                        d.state = 'idle'; d.targetX = null; d.targetY = null; d.path = null;
+                        addGameLog("🚂 " + (d.name || "部队") + " 乘火车抵达 " + toName + "，已下车");
+                    } else {
+                        d.targetX = cB.lon; d.targetY = cB.lat;
+                    }
+                }
+                continue outer;
+            }
+            // 海洋封锁：陆军禁止下海（空军可飞越）
+            if (!isSeaType(d.type) && d.type !== 'airplane' && typeof isOceanPoint === 'function') {
                 if (isOceanPoint(d.rx, d.ry) || isOceanPoint(d.targetX, d.targetY)) {
                     d.state='idle'; d.targetX=null; d.targetY=null; d.path=null;
                     continue;
@@ -515,8 +765,8 @@ outer: for (let d of G.divisions) {
                 if (_spdB > 0) speed *= 1 + _spdB;
             }
 
-            // Predictive province border check (land units)
-            if (!isSeaType(d.type)) {
+            // Predictive province border check (land units) — 空军可飞越国界
+            if (!isSeaType(d.type) && d.type !== 'airplane') {
                 let curPid = getProvinceAt(d.rx, d.ry);
                 if (curPid && canEnterProvince(curPid, d.country)) {
                     let dx=d.targetX-d.rx;let dy=d.targetY-d.ry;
@@ -547,6 +797,7 @@ outer: for (let d of G.divisions) {
                                 }
                             }
                             // No path found — stop
+                            if (d.railTrip) cancelRailTrip(d, "无法步行到达车站，运兵取消");
                             d.state='idle'; d.targetX=null; d.targetY=null; d.path=null;
                             continue outer;
                         }
@@ -578,6 +829,7 @@ outer: for (let d of G.divisions) {
             if(dist>speed){
                 let ndx = dx/dist; let ndy = dy/dist;
                 d.rx+=ndx*speed;d.ry+=ndy*speed;
+                d.moveDx = dx;
                 // Track facing direction based on movement
                 if (Math.abs(ndx) > Math.abs(ndy)) {
                     d.facing = ndx > 0 ? 'e' : 'w';
@@ -586,24 +838,57 @@ outer: for (let d of G.divisions) {
                 }
             }else{
                 d.rx=d.targetX;d.ry=d.targetY;
+                // 铁路运兵步行接驳阶段：到达起点站 → 上车（计算铁路路径，转入乘车阶段）
+                if (d.railTrip && d.railTrip.stage === 'walk_to_station') {
+                    let p = railwayPath(d.railTrip.from, d.railTrip.to, d.country);
+                    if (!p || p.length < 2) {
+                        cancelRailTrip(d, "铁路线路不可用，运兵取消");
+                    } else {
+                        d.railTrip.path = p;
+                        d.railTrip.seg = 0;
+                        d.railTrip.stage = 'on_train';
+                        let cA = G.cities[p[0]], cB = G.cities[p[1]];
+                        if (cA && cB) { d.targetX = cB.lon; d.targetY = cB.lat; }
+                        addGameLog("🚂 " + (d.name || "部队") + " 已登上开往 " + (G.cities[d.railTrip.to] ? G.cities[d.railTrip.to].name : "") + " 的火车");
+                    }
+                    continue outer;
+                }
                 d.state='idle';d.targetX=null;d.targetY=null;
                 d.path = null;
             }
         }
     }
-    for (let d of G.divisions) {
-        for (let e of G.divisions) {
-            if(d.id>=e.id) continue;
-            let dx=d.rx-e.rx;
-            if (Math.abs(dx) > separation) continue;
-            let dy=d.ry-e.ry;
-            if (Math.abs(dy) > separation) continue;
-            let dist=Math.hypot(dx,dy);
-            if(dist<separation&&dist>0.001){
-                let push=(separation-dist)/separation*0.01;
-                let nx=dx/dist;let ny=dy/dist;
-                d.rx+=nx*push;d.ry+=ny*push;
-                e.rx-=nx*push;e.ry-=ny*push;
+    // 分离推挤：空间网格分桶（0.25°），只检查同格+邻格，避免 O(N²) 两两配对
+    {
+        let SC = 0.25;
+        let sepBuckets = Object.create(null);
+        for (let d of G.divisions) {
+            if (d.rx === undefined) continue;
+            let k = Math.floor(d.rx / SC) + ',' + Math.floor(d.ry / SC);
+            (sepBuckets[k] || (sepBuckets[k] = [])).push(d);
+        }
+        for (let d of G.divisions) {
+            if (d.rx === undefined) continue;
+            let bx = Math.floor(d.rx / SC), by = Math.floor(d.ry / SC);
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    let b = sepBuckets[(bx + dx) + ',' + (by + dy)];
+                    if (!b) continue;
+                    for (let e of b) {
+                        if (d.id >= e.id) continue;
+                        let sdx = d.rx - e.rx;
+                        if (Math.abs(sdx) > separation) continue;
+                        let sdy = d.ry - e.ry;
+                        if (Math.abs(sdy) > separation) continue;
+                        let dist = Math.hypot(sdx, sdy);
+                        if (dist < separation && dist > 0.001) {
+                            let push = (separation - dist) / separation * 0.01;
+                            let nx = sdx / dist, ny = sdy / dist;
+                            d.rx += nx * push; d.ry += ny * push;
+                            e.rx -= nx * push; e.ry -= ny * push;
+                        }
+                    }
+                }
             }
         }
     }
@@ -690,6 +975,15 @@ outer: for (let d of G.divisions) {
 }
 
 function fireUnits(days) {
+    // id → division 索引（一次性构建，替代每单位线性 find）
+    let divById = null;
+    function _divOf(id) {
+        if (!divById) {
+            divById = new Map();
+            for (let x of G.divisions) divById.set(x.id, x);
+        }
+        return divById.get(id);
+    }
     // Spatial index: group divisions by 0.5° grid cells for fast neighbor lookup
     let CELL = 0.5;
     let buckets = Object.create(null);
@@ -698,19 +992,56 @@ function fireUnits(days) {
         let key = Math.floor(e.rx / CELL) + ',' + Math.floor(e.ry / CELL);
         (buckets[key] || (buckets[key] = [])).push(e);
     }
+    // 建筑网格索引（城市/工厂/海军节点），避免每单位全量扫描
+    let buildBuckets = Object.create(null);
+    if (G.cities) {
+        for (let cid in G.cities) {
+            let c = G.cities[cid];
+            if (!c || c.hp <= 0) continue;
+            let key = Math.floor(c.lon / CELL) + ',' + Math.floor(c.lat / CELL);
+            let list = (buildBuckets[key] || (buildBuckets[key] = []));
+            list.push({ bt: c, btype: 'city' });
+        }
+    }
+    if (G.factories) {
+        for (let f of G.factories) {
+            if (!f || f.hp <= 0) continue;
+            let key = Math.floor(f.rx / CELL) + ',' + Math.floor(f.ry / CELL);
+            let list = (buildBuckets[key] || (buildBuckets[key] = []));
+            list.push({ bt: f, btype: 'factory' });
+        }
+    }
+    if (G.navyNodes) {
+        for (let nid in G.navyNodes) {
+            let n = G.navyNodes[nid];
+            if (!n || n.hp <= 0) continue;
+            let key = Math.floor(n.lon / CELL) + ',' + Math.floor(n.lat / CELL);
+            let list = (buildBuckets[key] || (buildBuckets[key] = []));
+            list.push({ bt: n, btype: 'node' });
+        }
+    }
 
     for (let d of G.divisions) {
         let ut=UNIT_TYPES[d.type];
         if(!ut) continue;
+        // 铁路运兵乘车阶段：在车厢内不可开火
+        if (d.railTrip && d.railTrip.stage === 'on_train') continue;
+        // 缺粮（断粮）状态：全属性 -40%（伤害/射程/射速；移速在 ai_pathfinding 中同乘 0.6）
+        let sMult = d.supplyStatus === 'starve' ? 0.6 : 1;
         // Use navy-specific stats if available
-        let vRange = (isSeaType(d.type) && d.navyRng !== undefined) ? d.navyRng : ut.range;
-        let vDamage = (isSeaType(d.type) && d.navyDmg !== undefined) ? d.navyDmg : ut.damage;
+        let vRange = ((isSeaType(d.type) && d.navyRng !== undefined) ? d.navyRng : ut.range) * sMult;
+        // 炮兵位于山地：射程 +20%
+        if (d.type === 'artillery' && typeof terrainAt === 'function' && terrainAt(d.rx, d.ry) === 'mountains') {
+            vRange *= 1 + (typeof ARTILLERY_MOUNTAIN_RANGE_BONUS !== 'undefined' ? ARTILLERY_MOUNTAIN_RANGE_BONUS : 0.2);
+        }
+        let vDamage = ((isSeaType(d.type) && d.navyDmg !== undefined) ? d.navyDmg : ut.damage) * sMult;
         // 指挥系统：攻击加成（集团军指挥官 + 总司令光环）
         if (typeof getDivisionAtkBonus === 'function') {
             let _atkB = getDivisionAtkBonus(d);
             if (_atkB > 0) vDamage *= 1 + _atkB;
         }
-        let vFireCd = (isSeaType(d.type) && d.navyFr !== undefined) ? d.navyFr : ut.fireRate;
+        // 射速惩罚：天/发 数值 ÷0.6（射速 -40%）
+        let vFireCd = ((isSeaType(d.type) && d.navyFr !== undefined) ? d.navyFr : ut.fireRate) / sMult;
         d.fireCooldown=Math.max(0,(d.fireCooldown||0)-days);
         if(d.fireCooldown>0) continue;
 
@@ -734,7 +1065,7 @@ function fireUnits(days) {
 
         // Focus target: player right-clicked enemy
         if (d.focusTarget) {
-            let ft=G.divisions.find(x=>x.id===d.focusTarget);
+            let ft = _divOf(d.focusTarget);
             if(ft&&ft.strength>0&&ft.country!==d.country){
                 lockTarget = ft;
                 let dist=Math.hypot(d.rx-ft.rx,d.ry-ft.ry);
@@ -829,29 +1160,30 @@ function fireUnits(days) {
             if(bestE && !fireTarget) fireTarget = bestE;
         }
 
-        // Auto-target buildings: scan for enemy cities/factories/navy nodes in range
+        // Auto-target buildings: scan for enemy cities/factories/navy nodes in range（建筑网格索引，3×3 邻格）
         if (!fireTarget && !d.focusCity && !d.focusFactory) {
             let bTarget = null, bIsCity = false, bIsNode = false;
-            for (let fact of G.factories) {
-                if (fact.hp <= 0 || fact.country === d.country || !canEngage(d.country, fact.country)) continue;
-                let dist = Math.hypot(d.rx - fact.rx, d.ry - fact.ry);
-                if (dist < vRange) { bTarget = fact; break; }
-            }
-            if (!bTarget) {
-                for (let cid in G.cities) {
-                    let fc = G.cities[cid];
-                    if (fc.hp <= 0 || fc.owner === d.country || !canEngage(d.country, fc.owner)) continue;
-                    let dist = Math.hypot(d.rx - fc.lon, d.ry - fc.lat);
-                    if (dist < vRange) { bTarget = fc; bIsCity = true; break; }
+            let bcx = Math.floor(d.rx / CELL), bcy = Math.floor(d.ry / CELL);
+            let bSpan = (vRange > 0.75) ? 2 : 1; // 海军/远程单位扩大搜索范围，防止射程外漏
+            let buildCell;
+            for (let bdx = -bSpan; bdx <= bSpan; bdx++) {
+                for (let bdy = -bSpan; bdy <= bSpan; bdy++) {
+                    buildCell = buildBuckets[bcx + bdx + ',' + (bcy + bdy)];
+                    if (!buildCell) continue;
+                    for (let bi = 0; bi < buildCell.length; bi++) {
+                        let bentry = buildCell[bi];
+                        let bt = bentry.bt;
+                        let bx0 = bt.rx !== undefined ? bt.rx : bt.lon;
+                        let by0 = bt.ry !== undefined ? bt.ry : bt.lat;
+                        if (bt.owner === d.country || bt.country === d.country) continue;
+                        if (bt.hp <= 0) continue;
+                        if (!canEngage(d.country, bt.owner || bt.country)) continue;
+                        let dist = Math.hypot(d.rx - bx0, d.ry - by0);
+                        if (dist < vRange) { bTarget = bt; bIsCity = bentry.btype === 'city'; bIsNode = bentry.btype === 'node'; break; }
+                    }
+                    if (bTarget) break;
                 }
-            }
-            if (!bTarget && typeof G.navyNodes !== 'undefined') {
-                for (let nid in G.navyNodes) {
-                    let node = G.navyNodes[nid];
-                    if (!node || node.hp <= 0 || node.country === d.country || !canEngage(d.country, node.country)) continue;
-                    let dist = Math.hypot(d.rx - node.lon, d.ry - node.lat);
-                    if (dist < vRange) { bTarget = node; bIsNode = true; break; }
-                }
+                if (bTarget) break;
             }
             if (bTarget) {
                 d.fireCooldown = vFireCd; d.maxFireCd = vFireCd;
@@ -1104,7 +1436,9 @@ function updateProjectiles(days) {
     // Spatial index: 0.5° grid for fast O(1) neighbor lookup (only when needed)
     const CELL = 0.5;
     const buckets = Object.create(null);
+    const _divById2 = new Map();
     for (const e of G.divisions) {
+        _divById2.set(e.id, e);
         if (e.strength <= 0) continue;
         const key = Math.floor(e.rx / CELL) + ',' + Math.floor(e.ry / CELL);
         (buckets[key] || (buckets[key] = [])).push(e);
@@ -1197,7 +1531,7 @@ function updateProjectiles(days) {
             return false;
         }
         if (p.tracking && p.targetDivId) {
-            let trg = G.divisions.find(d => d.id === p.targetDivId);
+            let trg = _divById2.get(p.targetDivId);
             if (trg && trg.strength > 0) {
                 p.endX = trg.rx;
                 p.endY = trg.ry;
@@ -1485,6 +1819,15 @@ function processBuildQueue(dtMs) {
                     MAJOR_CITY_IDS.add(q[i].cityId);
                     G.cities[q[i].cityId].maxHp = 200;
                     G.cities[q[i].cityId].hp = 200;
+                    // 粮食参数同步为大城市（保留已升级产量）
+                    let _cc = G.cities[q[i].cityId];
+                    if (_cc.cityType === 'small' && typeof GRAIN_CITY_CFG !== 'undefined' && GRAIN_CITY_CFG.major) {
+                        _cc.cityType = 'major';
+                        _cc.grainMax = GRAIN_CITY_CFG.major.grainMax;
+                        _cc.supplyRadius = GRAIN_CITY_CFG.major.supplyRadius;
+                        if (!_cc.grainUpgraded) _cc.grainPerMonth = GRAIN_CITY_CFG.major.grainPerMonth;
+                        else _cc.grainPerMonth = Math.max(_cc.grainPerMonth || 0, GRAIN_CITY_CFG.major.grainPerMonth);
+                    }
                 }
                 addGameLog(q[i].cityName + " 已升级为大城市");
             } else {
@@ -1580,11 +1923,101 @@ function processBuildQueue(dtMs) {
     }
 }
 
+// ===== 粮食（补给）结算：城市产粮 → 升级计时 → 部队消耗 → 断粮判定 =====
+function cityGrainCfgKey(city) {
+    if (!city) return 'small';
+    if (city.cityType && typeof GRAIN_CITY_CFG !== 'undefined' && GRAIN_CITY_CFG[city.cityType]) return city.cityType;
+    return city.isCapital ? 'capital' : (typeof isMajorCity === 'function' && isMajorCity(city.id)) ? 'major' : 'small';
+}
+function unitGrainPerMonth(d) {
+    if (typeof isSeaType === 'function' && isSeaType(d.type)) return 0;
+    let m = (typeof UNIT_GRAIN_PER_MONTH !== 'undefined') ? UNIT_GRAIN_PER_MONTH[d.type] : 0;
+    return m || 30;
+}
+// 部队归属最近己方城市（返回 {city, distKm}，超出补给半径返回 null）
+function findSupplyCity(d) {
+    let best = null, bestKm = Infinity;
+    let kmPerDeg = (typeof KM_PER_DEG !== 'undefined') ? KM_PER_DEG : 111;
+    for (let cid in G.cities) {
+        let c = G.cities[cid];
+        if (!c || c.grainMax === undefined || c.owner !== d.country || c.hp <= 0) continue;
+        let latR = c.lat * Math.PI / 180;
+        let kmX = (d.rx - c.lon) * kmPerDeg * Math.cos(latR);
+        let kmY = (d.ry - c.lat) * kmPerDeg;
+        let dist = Math.hypot(kmX, kmY);
+        if (dist < bestKm) { bestKm = dist; best = c; }
+    }
+    if (!best) return null;
+    if (bestKm > (best.supplyRadius || 50)) return null;
+    return { city: best, distKm: bestKm };
+}
+// 部队口粮上限：基础 30 天，将领后勤加成可多携带（后勤+10% → 上限 33 天）
+function rationsMaxFor(d) {
+    let lb = 0;
+    if (d && typeof getDivisionLogiBonus === 'function') lb = getDivisionLogiBonus(d) || 0;
+    return Math.round((typeof GRAIN_RATIONS_MAX !== 'undefined' ? GRAIN_RATIONS_MAX : 30) * (1 + lb));
+}
+function updateGrain(days) {
+    if (!G.cities) return;
+    // 1) 城市产粮 + 升级计时
+    for (let cid in G.cities) {
+        let c = G.cities[cid];
+        if (c.grainMax === undefined) continue;
+        if (c.grainUpgradeProgress > 0) {
+            c.grainUpgradeProgress = Math.max(0, c.grainUpgradeProgress - days);
+            if (c.grainUpgradeProgress <= 0) {
+                c.grainUpgraded = true;
+                c.grainPerMonth = (c.cityType === 'small') ? 30 : (c.grainPerMonth || 15) * 2;
+                addGameLog(c.name + " 粮食产量提升完成（月产 " + c.grainPerMonth + "）");
+            }
+        }
+        let pm = c.grainPerMonth;
+        c.grain = Math.min(c.grainMax || 150, (c.grain || 0) + pm * days / 30);
+        c.suppliedDivs = 0;
+    }
+    // 2) 部队补给归属与消耗
+    for (let d of G.divisions) {
+        if (d.rx === undefined) continue;
+        if (d.rations === undefined) d.rations = rationsMaxFor(d);
+        d.supplyStatus = 'ok';
+        d.supplySource = null;
+        let perMonth = unitGrainPerMonth(d);
+        if (perMonth <= 0) continue; // 海军/潜艇走海上补给
+        let s = findSupplyCity(d);
+        if (!s) {
+            // 断粮：不在任何己方城市补给半径内
+            d.supplyStatus = 'starve';
+            d.rations = Math.max(0, d.rations - days);
+            if (d.rations <= 0) {
+                // 口粮耗尽：每天固定扣 5 点兵力
+                let atk = (typeof GRAIN_STARVE !== 'undefined' && GRAIN_STARVE.attritionPerDay) || 5;
+                d.strength = Math.max(1, d.strength - atk * days);
+            }
+            continue;
+        }
+        s.city.suppliedDivs++;
+        d.supplySource = { cityId: s.city.id, cityName: s.city.name, distKm: Math.round(s.distKm) };
+        if (s.city.grain > 1) {
+            d.supplyStatus = 'ok';
+            s.city.grain = Math.max(0, s.city.grain - perMonth * days / 30);
+            // 口粮渐进恢复（每天恢复 5 天，直到上限，不瞬间补满）
+            let _rec = ((typeof GRAIN_RATIONS_RECOVER_DAY !== 'undefined') ? GRAIN_RATIONS_RECOVER_DAY : 5) * days;
+            d.rations = Math.min(rationsMaxFor(d), (d.rations === undefined ? 0 : d.rations) + _rec);
+        } else {
+            d.supplyStatus = 'low';
+        }
+        // 口粮充足（≥25天）：每天恢复 3 点兵力
+        if ((d.rations || 0) >= 25) {
+            d.strength = Math.min(d.maxStrength || 100, (d.strength || 0) + 3 * days);
+        }
+    }
+}
+
 function updateEconomy(days) {
     for (let[c,data] of Object.entries(G.countries)) {
         
         let inc=calcCountryIncome(c);
-        // 师团维护费 1.5金/天；指挥系统后勤加成可减免（后勤-20% → 维护费-20%）
+        // 师团维护费 1.5金/天；指挥系统后勤加成可减免（后勤+20% → 维护费-20%）
         let exp = 0;
         if (G.divisions) {
             for (let dd of G.divisions) {
@@ -1605,7 +2038,7 @@ function updateEconomy(days) {
         exp += occupiedCities;
         data.income=Math.round(inc*10)/10;
         data.expenses=Math.round(exp*10)/10;
-        data.treasury+=inc-exp;
+        data.treasury+=(inc-exp)*days;
         data.treasury=Math.round(data.treasury*10)/10;
         if (data.manpower !== undefined) {
             data.manpower = Math.min(data.maxManpower, data.manpower + data.maxManpower * 0.001 * days);
@@ -1876,7 +2309,7 @@ function updateAI() {
             let ps = getCountryProvinces(co).filter(p => p.garrison < 3);
             if (ps.length > 0) {
                 let affordable = [];
-                for (let ut of ['infantry','engineer','cavalry','artillery']) {
+                for (let ut of ['infantry','engineer','cavalry','artillery','mountain','airplane']) {
                     if (cd.treasury >= UNIT_TYPES[ut].cost * 1.15) affordable.push(ut);
                 }
                 if (cd.treasury >= UNIT_TYPES.navy.cost * 1.15 && NAVAL_BASES && NAVAL_BASES.some(nb => nb.country === co)) {
@@ -2700,6 +3133,37 @@ function handleUIClick(mx,my) {
     let w=canvas.width,h=canvas.height;
     if (!G.playerCountry) return true;
 
+    // ===== 铁路运兵弹窗（模态优先） =====
+    if (G._railModal && window._railModalRect && window._railModalRect.x !== undefined) {
+        if (window._railModalBtns) {
+            for (let b of window._railModalBtns) {
+                if (mx > b.x && mx < b.x + b.w && my > b.y && my < b.y + b.h) {
+                    if (b.id === 'rail_close') {
+                        G._railModal = null;
+                    } else if (b.id.indexOf('rail_to_') === 0) {
+                        let toId = b.id.slice('rail_to_'.length);
+                        let m = G._railModal;
+                        // 发车对象：选中陆军（每支部队各自就近上车）
+                        let unitIds = G.selectedDivisions.filter(did => {
+                            let d = G.divisions.find(x => x.id === did);
+                            return d && d.country === G.playerCountry && !isSeaType(d.type) && d.type !== 'airplane';
+                        });
+                        G._railModal = null;
+                        if (unitIds.length === 0) {
+                            addGameLog("没有可发车的陆军部队");
+                            return true;
+                        }
+                        startRailTrip(unitIds, null, toId);
+                    }
+                    return true;
+                }
+            }
+        }
+        let mr = window._railModalRect;
+        if (mx > mr.x && mx < mr.x + mr.w && my > mr.y && my < mr.y + mr.h) return true;
+        return true;
+    }
+
     // ===== 指挥系统：底部快捷栏 =====
     if (window._cmdBtns) {
         for (let b of window._cmdBtns) {
@@ -3054,6 +3518,22 @@ function handleUIClick(mx,my) {
                     G._cmdModal = { mode: 'join' }; G._cmdModalScroll = 0;
                     return true;
                 }
+                // 铁路运兵：打开铁路弹窗（多选时每支部队各自就近上车）
+                if (b.id === "rail_trip") {
+                    let landDivs = G.selectedDivisions.map(id => G.divisions.find(d => d.id === id)).filter(d => d && d.country === G.playerCountry && !isSeaType(d.type) && d.type !== 'airplane');
+                    if (landDivs.length === 0) return true;
+                    let midX = 0, midY = 0;
+                    for (let d of landDivs) { midX += d.rx; midY += d.ry; }
+                    midX /= landDivs.length; midY /= landDivs.length;
+                    let station = railNearestStation(midX, midY, G.playerCountry);
+                    if (!station) {
+                        addGameLog("附近没有可用铁路站");
+                        return true;
+                    }
+                    // fromCity=null 表示"各自就近上车"；station 仅作参考列表
+                    G._railModal = { origin: 'unit', fromCity: null, refCity: station, to: null, scroll: 0 };
+                    return true;
+                }
                 if (b.id === "set_chief") {
                     G._cmdModal = { mode: 'chief' }; G._cmdModalScroll = 0;
                     return true;
@@ -3256,6 +3736,17 @@ function handleUIClick(mx,my) {
                     addGameLog(city.name + " 开始升级为大城市 (40天)");
                     return true;
                 }
+                // 小城市提升粮食产量（100金币 / 30天 / 限1次）
+                if (btn.id === 'upgrade_grain') {
+                    let c2 = G.cities[city.id];
+                    let c2Data = G.countries[G.playerCountry];
+                    if (!c2 || !c2Data || c2.grainUpgraded || c2.grainUpgradeProgress > 0 || c2Data.treasury < (GRAIN_UPGRADE_COST || 100)) return true;
+                    if (G.multiplayerMode === 'client') return true;
+                    c2Data.treasury -= (GRAIN_UPGRADE_COST || 100);
+                    c2.grainUpgradeProgress = (GRAIN_UPGRADE_DAYS || 30);
+                    addGameLog(c2.name + " 开始提升粮食产量（" + (GRAIN_UPGRADE_DAYS || 30) + "天）");
+                    return true;
+                }
                 // 单位生产加入队列（带进度）
                 let ut = UNIT_TYPES[btn.id];
                 if (!ut) return true;
@@ -3263,7 +3754,7 @@ function handleUIClick(mx,my) {
                 let manpowerCost = ut.manpower || 10;
                 // 联机客户端：转发到Host
                 if (G.multiplayerMode === 'client') {
-                    let buildDays = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5 }[btn.id] || 20;
+                    let buildDays = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5, mountain: 3, airplane: 15 }[btn.id] || 20;
                     MP.sendAction({ type: 'build', buildType: 'unit', unitType: btn.id, province: city.provinceId, totalDays: buildDays, cityId: city.id, cityLon: city.lon, cityLat: city.lat });
                     addGameLog("已向Host发送 " + (ut.label || btn.id) + " 生产指令");
                     return true;
@@ -3272,7 +3763,7 @@ function handleUIClick(mx,my) {
                 cData.treasury -= ut.cost;
                 cData.manpower -= manpowerCost;
                 if (!G.buildQueue) G.buildQueue = [];
-                let buildDays = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5 }[btn.id] || 20;
+                let buildDays = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5, mountain: 3, airplane: 15 }[btn.id] || 20;
                 G.buildQueue.push({ type: 'unit', unitType: btn.id, province: city.provinceId, days: buildDays, totalDays: buildDays, cityId: city.id, cityLon: city.lon, cityLat: city.lat });
                 return true;
             }
@@ -3304,7 +3795,7 @@ function handleUIClick(mx,my) {
                 if (cData.treasury < total || cData.manpower < mc * n) return true;
                 cData.treasury -= total;
                 cData.manpower -= mc * n;
-                let bd = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5 }[btn.id] || 20;
+                let bd = { infantry: 3, engineer: 3, cavalry: 4, artillery: 5, mountain: 3, airplane: 15 }[btn.id] || 20;
                 for (let c of btn.cities) {
                     G.buildQueue.push({ type: 'unit', unitType: btn.id, province: c.provinceId, days: bd, totalDays: bd, cityId: c.id, cityLon: c.lon, cityLat: c.lat });
                 }
@@ -3428,7 +3919,7 @@ function handleUIClick(mx,my) {
 // ===== Find unit at screen position =====
 function findUnitAtScreen(sx, sy) {
     let best = null;
-    let bestDist = 20;
+    let bestDist = Infinity;
     for (let d of G.divisions) {
         let rx = d.rx!==undefined ? d.rx : null;
         let ry = d.ry!==undefined ? d.ry : null;
@@ -3441,7 +3932,9 @@ function findUnitAtScreen(sx, sy) {
         if (ux < -100 || ux > canvas.width + 100 || uy < -100 || uy > canvas.height + 100) continue;
         if (!isSeaType(d.type) && zoom <= 0.35) continue;
         let dist = Math.hypot(sx - ux, sy - uy);
-        if (dist < bestDist) { best = d; bestDist = dist; }
+        // 判定圈贴合贴图实际大小：海军 42(≈35×1.2)、陆军 8(≈6.1×1.3)，随 effZoom 缩放；不随射程
+        let hitR = (d.type === 'navy' ? 42 : 8) * Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
+        if (dist < hitR && dist < bestDist) { best = d; bestDist = dist; }
     }
     return best;
 }
@@ -3512,6 +4005,15 @@ canvas.addEventListener("wheel",(e)=>{
     e.preventDefault();
     let r=canvas.getBoundingClientRect();
     let sx=e.clientX-r.left,sy=e.clientY-r.top;
+
+    // 铁路运兵弹窗：滚轮滚动城市列表
+    if (G._railModal && window._railModalRect) {
+        let mr = window._railModalRect;
+        if (sx > mr.x && sx < mr.x + mr.w && sy > mr.y && sy < mr.y + mr.h) {
+            G._railModal.scroll = Math.max(0, Math.min(G._railModalMaxScroll || 0, (G._railModal.scroll || 0) + e.deltaY));
+            return;
+        }
+    }
 
     // 指挥系统弹窗：滚轮滚动指挥官列表
     if (G._cmdModal && window._cmdModalRect) {
@@ -3725,6 +4227,28 @@ canvas.addEventListener("pointerup",(e)=>{
 
         let r=canvas.getBoundingClientRect();
         let sx=e.clientX-r.left,sy=e.clientY-r.top;
+
+        // 工厂视图切换按钮
+        if (window._factoryBtnRect && sx > window._factoryBtnRect.x && sx < window._factoryBtnRect.x + window._factoryBtnRect.w && sy > window._factoryBtnRect.y && sy < window._factoryBtnRect.y + window._factoryBtnRect.h) {
+            G._factoryView = !G._factoryView;
+            isDragging = false;
+            return;
+        }
+
+        // 补给视图切换按钮（右下角）
+        if (window._supplyBtnRect && sx > window._supplyBtnRect.x && sx < window._supplyBtnRect.x + window._supplyBtnRect.w && sy > window._supplyBtnRect.y && sy < window._supplyBtnRect.y + window._supplyBtnRect.h) {
+            G.supplyView = !G.supplyView;
+            isDragging = false;
+            return;
+        }
+
+        // 铁路视图切换按钮（右下角）
+        if (window._railBtnRect && sx > window._railBtnRect.x && sx < window._railBtnRect.x + window._railBtnRect.w && sy > window._railBtnRect.y && sy < window._railBtnRect.y + window._railBtnRect.h) {
+            G.railwaysView = !(G.railwaysView !== false);
+            addGameLog("铁路视图: " + (G.railwaysView === false ? "关闭" : "开启"));
+            isDragging = false;
+            return;
+        }
 
         // 点击左上角国旗 → 打开本国交互页面
         if (G.playerCountry && sy < TOP_BAR_HEIGHT && sx < 120) {
@@ -4094,7 +4618,7 @@ canvas.addEventListener("contextmenu",(e)=>{
             let rx=d.rx!==undefined?d.rx:0; let ry=d.ry!==undefined?d.ry:0;
             if(!rx){let dp=G.provinceData[d.province];if(dp&&dp.center){rx=dp.center[0];ry=dp.center[1];}}
             let[ux,uy]=worldToScreen(rx,ry);
-            if(Math.hypot(sx-ux,sy-uy)<16){enemyTarget=d;break;}
+            if(Math.hypot(sx-ux,sy-uy)<25*zoom){enemyTarget=d;break;}
         }
         if (enemyTarget) {
             MP.sendAction({ type: 'focus', unitIds: [...G.selectedDivisions], targetUnitId: enemyTarget.id });
@@ -4138,7 +4662,7 @@ canvas.addEventListener("contextmenu",(e)=>{
         let rx=d.rx!==undefined?d.rx:0; let ry=d.ry!==undefined?d.ry:0;
         if(!rx){let dp=G.provinceData[d.province];if(dp&&dp.center){rx=dp.center[0];ry=dp.center[1];}}
         let[ux,uy]=worldToScreen(rx,ry);
-        if(Math.hypot(sx-ux,sy-uy)<16){enemyTarget=d;break;}
+        if(Math.hypot(sx-ux,sy-uy)<25*zoom){enemyTarget=d;break;}
     }
 
     if (enemyTarget) {
@@ -4148,6 +4672,7 @@ canvas.addEventListener("contextmenu",(e)=>{
                 d.focusTarget = enemyTarget.id;
                 d.focusFactory = null;
                 d.focusCity = null;
+                d.railTrip = null; // 取消铁路运兵
                 // Don't need to move if we're just locking — stay in place and fire
                 d.state = 'idle';
                 d.targetX = null;
@@ -4166,7 +4691,7 @@ canvas.addEventListener("contextmenu",(e)=>{
             if (Math.hypot(sx - fx, sy - fy) < 16) {
                 for (let did of cmdIds) {
                     let d = G.divisions.find(x => x.id === did);
-                    if (d) { d.focusFactory = fact.id; d.focusTarget = null; d.focusCity = null; }
+                    if (d) { d.focusFactory = fact.id; d.focusTarget = null; d.focusCity = null; d.railTrip = null; }
                 }
                 addGameLog("集火工厂已标记");
                 return;
@@ -4185,7 +4710,7 @@ canvas.addEventListener("contextmenu",(e)=>{
             if (Math.hypot(sx - cx, sy - cy) < 18) {
                 for (let did of cmdIds) {
                     let d = G.divisions.find(x => x.id === did);
-                    if (d) { d.focusCity = cityId; d.focusTarget = null; d.focusFactory = null; }
+                    if (d) { d.focusCity = cityId; d.focusTarget = null; d.focusFactory = null; d.railTrip = null; }
                 }
                 addGameLog("集火城市 " + city.name + " 已标记");
                 return;
@@ -4214,11 +4739,12 @@ canvas.addEventListener("contextmenu",(e)=>{
         let d=G.divisions.find(x=>x.id===did);
         if(!d) continue;
         d.path = null; d.pathIndex = 0;
+        d.railTrip = null; // 右键移动命令取消铁路运兵
 
-        // Determine final target: snap to province center if target province is restricted (land only)
+        // Determine final target: snap to province center if target province is restricted (land only, 空军可飞越)
         let targetProv = getProvinceAt(wx, wy);
         let finalX = wx, finalY = wy;
-        if (!isSeaType(d.type) && targetProv && !canEnterProvince(targetProv, d.country) && best && G.provinceData[best] && G.provinceData[best].center) {
+        if (!isSeaType(d.type) && d.type !== 'airplane' && targetProv && !canEnterProvince(targetProv, d.country) && best && G.provinceData[best] && G.provinceData[best].center) {
             // Target province is restricted — snap to nearest valid province center
             finalX = G.provinceData[best].center[0];
             finalY = G.provinceData[best].center[1];
@@ -4232,8 +4758,8 @@ canvas.addEventListener("contextmenu",(e)=>{
             continue;
         }
 
-        // Province-based pathfinding for land units
-        if (!isSeaType(d.type) && typeof findProvincePath === 'function') {
+        // Province-based pathfinding for land units (空军直线飞行，不需要省份寻路)
+        if (!isSeaType(d.type) && d.type !== 'airplane' && typeof findProvincePath === 'function') {
             let startProv = getProvinceAt(d.rx, d.ry);
             let endProv = getProvinceAt(finalX, finalY);
             if (startProv && endProv && startProv !== endProv) {

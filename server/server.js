@@ -42,6 +42,11 @@ const server = http.createServer((req, res) => {
         if (err) { res.writeHead(404); res.end('Not Found'); return; }
         const ext = path.extname(filePath);
         const headers = { 'Content-Type': MIME[ext] || 'application/octet-stream' };
+        // HTML/JS 禁用缓存，避免浏览器加载旧版本号/旧逻辑
+        if (ext === '.html' || ext === '.js') {
+            headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+            headers['Pragma'] = 'no-cache';
+        }
         // 图片文件添加 CORS 头，避免 canvas getImageData 跨域污染
         if (['.jpg','.jpeg','.png','.gif','.webp','.svg'].includes(ext)) {
             headers['Access-Control-Allow-Origin'] = '*';

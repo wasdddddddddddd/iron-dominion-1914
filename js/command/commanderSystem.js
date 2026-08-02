@@ -337,7 +337,7 @@ function setChief(code, cmdId) {
         let labelMap = { atk: '攻击', hp: '血量', spd: '移速', logi: '后勤' };
         auraTxt = "光环：" + getAuraList(d).map(a => {
             let v = a.value || 0;
-            let sign = v < 0 ? '-' : (a.stat === 'logi' ? '-' : '+');
+            let sign = v < 0 ? '-' : '+';
             return (labelMap[a.stat] || a.stat) + sign + Math.round(Math.abs(v) * 100) + '%';
         }).join('/');
     }

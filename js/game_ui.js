@@ -383,29 +383,6 @@ function drawSelection() {
         }
     }
 
-    // City/building highlight
-    if (G.selectedCity) {
-        let city = G.selectedCity;
-        let [sx, sy] = worldToScreen(city.lon, city.lat);
-        let isCap = city.isCapital || false;
-        let isMaj = _MAJOR_CITIES.has(city.id) || (typeof isMajorCity === 'function' && isMajorCity(city.id));
-        let hlSize = isCap ? 108 : (isMaj ? 56 : 33);
-        let hlCY = sy - 10;
-        if (sx > -50 && sx < canvas.width + 50 && sy > -50 && sy < canvas.height + 50) {
-            ctx.shadowColor = "#4A90D9";
-            ctx.shadowBlur = 16;
-            ctx.strokeStyle = "#4A90D9";
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.arc(sx, hlCY, hlSize * 0.55, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.shadowBlur = 0;
-            ctx.fillStyle = "rgba(74,144,217,0.15)";
-            ctx.beginPath();
-            ctx.arc(sx, hlCY, hlSize * 0.7, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
     ctx.restore();
 }
 
@@ -566,14 +543,18 @@ function drawCities() {
         }
 
         ctx.save();
-        // 首都缩小到二分之一
-        let bImgSize = city.isCapital ? 54 : (isMajor ? 56 : 33);
+        // 战术层以下建筑大小固定（不随视野拉远缩小），战术层以上随缩放
+        let bEffZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
+        let bImgSize = city.isCapital ? (10 * bEffZoom * 3) : ((isMajor ? 5 : 6.75) * bEffZoom * 2);
         let bCenterY = sy - 10;
-        // 脚底阴影
-        ctx.beginPath();
-        ctx.ellipse(sx, bCenterY + bImgSize * 0.48, bImgSize * 0.32, bImgSize * 0.04, 0, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(0,0,0,0.18)';
-        ctx.fill();
+        // 脚底阴影（首都除外）
+        if (!city.isCapital) {
+            let shadowOffset = isMajor ? 0.44 : 0.08;
+            ctx.beginPath();
+            ctx.ellipse(sx, bCenterY + bImgSize * shadowOffset, bImgSize * 0.42, bImgSize * 0.14, 0, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(0,0,0,0.25)';
+            ctx.fill();
+        }
         if (buildingImg && buildingImg.width > 0) {
             let imgSize = bImgSize;
             let ix = sx - imgSize/2, iy = sy - 10 - imgSize/2;
@@ -588,7 +569,7 @@ function drawCities() {
             ctx.shadowBlur = 0;
         }
 
-        // 选中光圈（单选或框选城市）
+        // 选中光圈（单选或框选城市），随建筑等比缩放
         let isSelCity = (G.selectedCity && G.selectedCity.id === city.id) ||
                         (G.selectedCities && G.selectedCities.indexOf(city.id) >= 0);
         if (isSelCity) {
@@ -598,10 +579,6 @@ function drawCities() {
             ctx.fill();
             ctx.strokeStyle = "#c8a830";
             ctx.lineWidth = 2;
-            ctx.stroke();
-            ctx.beginPath(); ctx.arc(sx, sy - 10, selR * 1.35, 0, Math.PI * 2);
-            ctx.strokeStyle = "rgba(200,168,48,0.3)";
-            ctx.lineWidth = 1;
             ctx.stroke();
         }
 
@@ -752,15 +729,21 @@ function drawFireZones() {
 
 function drawFactories() {
     if (!G.factories) return;
-    // 工厂只在缩放到小城市级别（zoom>0.7）时显示
-    if (zoom <= 0.7) return;
+    // 工厂视图模式下始终显示，否则仅在缩放到小城市级别（zoom>0.7）时显示
+    if (!G._factoryView && zoom <= 0.7) return;
     for (let fact of G.factories) {
         if (!fact || fact.hp <= 0) continue;
         let [sx, sy] = worldToScreen(fact.rx, fact.ry);
         if (sx < -50 || sx > canvas.width + 50 || sy < -50 || sy > canvas.height + 50) continue;
         ctx.save();
-        let fSize = 24;
+        let fEffZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
+        let fSize = 9 * fEffZoom * 2;
         let fImg = BUILDING_IMAGES['factory'];
+        // 脚底阴影（先于图像绘制）
+        ctx.beginPath();
+        ctx.ellipse(sx, sy + fSize * 0.30, fSize * 0.42, fSize * 0.14, 0, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(0,0,0,0.25)';
+        ctx.fill();
         if (fImg && fImg.width > 0) {
             let fix = sx - fSize/2, fiy = sy - fSize/2;
             ctx.drawImage(fImg, fix, fiy, fSize, fSize);
@@ -774,16 +757,18 @@ function drawFactories() {
         // HP bar — only show if damaged
         if (fact.hp < fact.maxHp) {
             let barW = 26, barH = 4;
+            let hpY = sy + fSize * 0.42;
             ctx.fillStyle = "rgba(0,0,0,0.7)";
-            ctx.fillRect(sx - barW/2 - 1, sy + 9, barW + 2, barH + 2);
+            ctx.fillRect(sx - barW/2 - 1, hpY - 1, barW + 2, barH + 2);
             ctx.fillStyle = fact.hp > fact.maxHp * 0.6 ? "#7a9a5a" : fact.hp > fact.maxHp * 0.3 ? "#c8a830" : "#b05040";
-            ctx.fillRect(sx - barW/2, sy + 10, barW * Math.max(0, fact.hp / fact.maxHp), barH);
+            ctx.fillRect(sx - barW/2, hpY, barW * Math.max(0, fact.hp / fact.maxHp), barH);
         }
         // 双击选中的工厂高亮金框
         if (G.selectedFactories && G.selectedFactories.indexOf(fact.id) >= 0) {
+            let selSize = 14; // 固定选中框，不随缩放变化
             ctx.strokeStyle = "rgba(200,168,48,0.9)";
             ctx.lineWidth = 1.5;
-            ctx.strokeRect(sx - fSize/2 - 2, sy - fSize/2 - 2, fSize + 4, fSize + 4);
+            ctx.strokeRect(sx - selSize - 2, sy - selSize - 2, (selSize + 2) * 2, (selSize + 2) * 2);
         }
         ctx.restore();
     }
@@ -819,7 +804,8 @@ function drawNavalBases() {
 
         // Naval base pixel art
         let nImg = BUILDING_IMAGES['naval'];
-        let nSize = 56;
+        let nEffZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
+        let nSize = 20 * nEffZoom * 2;
         if (nImg && nImg.width > 0) {
             let nix = sx - nSize/2, niy = sy - nSize/2;
             ctx.drawImage(nImg, nix, niy, nSize, nSize);
@@ -831,7 +817,7 @@ function drawNavalBases() {
         }
 
         // Anchor ring
-        ctx.beginPath(); ctx.arc(sx, sy, 24, 0, Math.PI * 2);
+        ctx.beginPath(); ctx.arc(sx, sy, nSize * 0.32, 0, Math.PI * 2);
         ctx.strokeStyle = drawColor;
         ctx.lineWidth = 2.5;
         ctx.stroke();
@@ -839,7 +825,7 @@ function drawNavalBases() {
         // 节点血量条（受损时显示）
         if (nodeHpRatio < 1) {
             let hpBarW = 40, hpBarH = 4;
-            let hpY = sy + 24;
+            let hpY = sy + nSize * 0.43;
             ctx.fillStyle = "rgba(0,0,0,0.7)";
             ctx.fillRect(sx - hpBarW/2 - 1, hpY, hpBarW + 2, hpBarH + 2);
             ctx.fillStyle = nodeHpRatio > 0.6 ? "#7a9a5a" : nodeHpRatio > 0.3 ? "#c8a830" : "#b05040";
@@ -855,7 +841,7 @@ function drawNavalBases() {
             if (hasNavy) {
                 let ct = Date.now() / 1000;
                 let pulse = 0.5 + 0.5 * Math.sin(ct * 4);
-                ctx.beginPath(); ctx.arc(sx, sy, 18, 0, Math.PI * 2);
+                ctx.beginPath(); ctx.arc(sx, sy, nSize * 0.32, 0, Math.PI * 2);
                 ctx.fillStyle = "rgba(100,200,255," + (0.15 + pulse * 0.15) + ")";
                 ctx.fill();
                 ctx.strokeStyle = "rgba(100,200,255," + (0.5 + pulse * 0.4) + ")";
@@ -865,7 +851,7 @@ function drawNavalBases() {
                 ctx.fillStyle = "#fff";
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
-                ctx.fillText("🛡️", sx, sy - 18);
+                ctx.fillText("🛡️", sx, sy - nSize * 0.32);
             }
         }
 
@@ -999,6 +985,21 @@ function drawTopBar() {
     ctx.font = "11px Georgia,serif";
     ctx.fillStyle = "rgba(200,180,150,0.3)";
     ctx.fillText("— GADM 省份地图 —", 170, TOP_BAR_HEIGHT / 2);
+    // 粮食显示：库存 + 净产（产-耗）
+    if (G.playerCountry && G.cities && G.countries && G.cities[Object.keys(G.cities)[0]] && G.cities[Object.keys(G.cities)[0]].grainMax !== undefined) {
+        let grain = 0, prod = 0, cons = 0;
+        for (let cid in G.cities) {
+            let c = G.cities[cid];
+            if (c.owner === G.playerCountry && c.grainMax !== undefined) { grain += Math.floor(c.grain || 0); prod += (c.grainPerMonth || 0); }
+        }
+        for (let d of G.divisions) { if (d.country === G.playerCountry) cons += (typeof unitGrainPerMonth === 'function') ? unitGrainPerMonth(d) : 0; }
+        let net = Math.round(prod - cons);
+        ctx.font = "12px Georgia,serif";
+        ctx.textAlign = "right";
+        ctx.fillStyle = net < 0 ? "#e0a050" : "#a8d868";
+        ctx.fillText("🌾 粮食 " + grain.toLocaleString() + "（" + (net >= 0 ? "+" : "") + net + "/月）", canvas.width - 16, TOP_BAR_HEIGHT / 2);
+        ctx.textAlign = "left";
+    }
     ctx.restore();
 }
 
@@ -1010,6 +1011,51 @@ function drawMouseCoords() {
     ctx.fillStyle = "rgba(200,180,150,0.2)";
     ctx.textAlign = "left"; ctx.textBaseline = "bottom";
     ctx.fillText(wx.toFixed(2) + "°, " + wy.toFixed(2) + "°", 12, canvas.height - BOTTOM_BAR_HEIGHT - 8);
+    ctx.restore();
+}
+
+// ---- 悬停地形提示（服务端生成的地形网格，0=海 1=平原 2=山地） ----
+let _terrainGridData = null, _hoverCache = null, _hoverCachePos = null;
+function terrainAt(wx, wy) {
+    const g = typeof TERRAIN_GRID !== 'undefined' ? TERRAIN_GRID : null;
+    if (!g) return null;
+    if (wx < g.lon0 || wx > g.lon0 + g.cols * g.cell || wy < g.lat1 - g.rows * g.cell || wy > g.lat1) return null;
+    const cx = Math.floor((wx - g.lon0) / g.cell), cy = Math.floor((g.lat1 - wy) / g.cell);
+    const idx = cy * g.cols + cx;
+    const key = idx;
+    if (_hoverCachePos === key) return _hoverCache;
+    if (!_terrainGridData) {
+        try { _terrainGridData = Uint8Array.from(atob(g.b64), c => c.charCodeAt(0)); }
+        catch (e) { return null; }
+    }
+    const v = (_terrainGridData[idx >> 2] >> ((idx & 3) * 2)) & 3;
+    _hoverCache = v === 2 ? 'mountains' : v === 1 ? 'flat' : null;
+    _hoverCachePos = key;
+    return _hoverCache;
+}
+function drawTerrainHover() {
+    const [wx, wy] = screenToWorld(mouseX, mouseY);
+    const t = terrainAt(wx, wy);
+    if (!t) return;
+    const isM = t === 'mountains';
+    const text = isM ? "山地" : "平原";
+    ctx.save();
+    ctx.font = "12px sans-serif";
+    const tw = ctx.measureText(text).width;
+    const padX = 8, bw = tw + padX * 2 + 14, bh = 22;
+    let bx = mouseX + 14, by = mouseY + 16;
+    if (bx + bw > canvas.width) bx = mouseX - bw - 10;
+    if (by + bh > canvas.height) by = mouseY - bh - 10;
+    ctx.fillStyle = "rgba(18,14,10,0.85)";
+    ctx.fillRect(bx, by, bw, bh);
+    ctx.strokeStyle = isM ? "rgba(180,140,80,0.55)" : "rgba(120,160,110,0.45)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(bx, by, bw, bh);
+    ctx.fillStyle = isM ? "#c89a5a" : "#8ab06a";
+    ctx.fillRect(bx + padX, by + bh / 2 - 4, 8, 8);
+    ctx.fillStyle = "#f0e6d0";
+    ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    ctx.fillText(text, bx + padX + 14, by + bh / 2 + 1);
     ctx.restore();
 }
 
@@ -1034,6 +1080,111 @@ function drawZoomIndicator() {
 }
 
 // ===== 墓碑绘制 =====
+// ===== 铁路网绘制（每帧动态：归属随占领变化） =====
+// 节点=城市；直线双轨（两端收拢进站）+ 低频淡色枕木；铁锈棕哑光配色
+// G.railwaysView 控制显示（默认开，右下角按钮可切换）
+// ---- 铁路段是否穿过山地（惰性缓存：采样沿线 3 点地形，任一为山地即记） ----
+let _railMtnCache = null;
+function ensureRailMtnCache() {
+    if (_railMtnCache && typeof TERRAIN_GRID !== 'undefined') return _railMtnCache;
+    _railMtnCache = {};
+    if (typeof TERRAIN_GRID === 'undefined') return _railMtnCache;
+    for (let key in (G.railways || {})) {
+        let sep = key.indexOf('|');
+        let a = key.slice(0, sep), b = key.slice(sep + 1);
+        let cA = G.cities[a], cB = G.cities[b];
+        if (!cA || !cB) continue;
+        let m = false;
+        for (let i = 1; i <= 3; i++) {
+            let t = i / 4;
+            if (terrainAt(cA.lon + (cB.lon - cA.lon) * t, cA.lat + (cB.lat - cA.lat) * t) === 'mountains') { m = true; break; }
+        }
+        _railMtnCache[key] = m;
+    }
+    return _railMtnCache;
+}
+function railwayIsMountain(key) { return !!(ensureRailMtnCache()[key]); }
+
+function drawRailways() {
+    if (!G.railways) return;
+    if (G.railwaysView === false) return;
+    let w = canvas.width, h = canvas.height;
+    let mtnCache = ensureRailMtnCache();
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (let key in G.railways) {
+        let sep = key.indexOf('|');
+        let a = key.slice(0, sep), b = key.slice(sep + 1);
+        let cA = G.cities[a], cB = G.cities[b];
+        if (!cA || !cB) continue;
+        let [x1, y1] = worldToScreen(cA.lon, cA.lat);
+        let [x2, y2] = worldToScreen(cB.lon, cB.lat);
+        // 线段包围盒与视野相交才画（任一端点在视野外、线段穿过屏幕也画，避免最大缩放时消失）
+        let minX = Math.min(x1, x2), maxX = Math.max(x1, x2);
+        let minY = Math.min(y1, y2), maxY = Math.max(y1, y2);
+        if (maxX < -80 || minX > w + 80 || maxY < -80 || minY > h + 80) continue;
+        // 铁路样式统一（铁锈棕 + 深色枕木），不按归属变色——各国铁路观感一致
+        // 穿过山地的段为"艰难路段"：颜色偏暗偏冷，运兵速度只有平原段的一半
+        let isMtn = mtnCache[key];
+        let col = isMtn ? 'rgba(132,108,86,0.75)' : 'rgba(176,130,86,0.85)';
+        // 直线方向
+        let dx = x2 - x1, dy = y2 - y1;
+        let len = Math.hypot(dx, dy) || 1;
+        let nx = -dy / len, ny = dx / len;
+        // 双轨：法线 ±2px，两端收拢进站（轨道汇聚于城市点）
+        let off = 2;
+        for (let side = -1; side <= 1; side += 2) {
+            ctx.strokeStyle = col;
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x1 + nx * off * side, y1 + ny * off * side);
+            ctx.lineTo(x2 + nx * off * side, y2 + ny * off * side);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+        }
+        // 枕木：每 22px 一根，淡色短横木（低对比，不抢眼）
+        ctx.strokeStyle = 'rgba(60,50,40,0.45)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        let sleepCount = 0;
+        let segs = Math.max(1, Math.round(len / 22));
+        for (let s = 0; s < segs && sleepCount < 500; s++) {
+            let t = (s + 0.5) / segs;
+            let px = x1 + dx * t, py = y1 + dy * t;
+            ctx.moveTo(px - nx * 2.5, py - ny * 2.5);
+            ctx.lineTo(px + nx * 2.5, py + ny * 2.5);
+            sleepCount++;
+        }
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
+// ===== 铁路视图切换按钮（右下角，补给按钮上方） =====
+function drawRailButton() {
+    let isActive = G.railwaysView !== false;
+    let btnW = 44, btnH = 28;
+    let btnX = canvas.width - btnW - 8, btnY = canvas.height - BOTTOM_BAR_HEIGHT - 110;
+    ctx.save();
+    ctx.fillStyle = isActive ? "rgba(176,130,86,0.35)" : "rgba(22,16,10,0.85)";
+    CT.roundRectPath(ctx, btnX, btnY, btnW, btnH, 4);
+    ctx.fill();
+    ctx.strokeStyle = isActive ? "rgba(176,130,86,0.7)" : "rgba(180,140,80,0.3)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = isActive ? "#e0c68c" : "#d4c0a0";
+    ctx.fillText("🚂", btnX + btnW / 2, btnY + btnH / 2);
+    if (isActive) {
+        ctx.fillStyle = "rgba(176,130,86,0.3)";
+        ctx.fillRect(btnX, btnY + btnH - 2, btnW, 2);
+    }
+    window._railBtnRect = { x: btnX, y: btnY, w: btnW, h: btnH };
+    ctx.restore();
+}
+
 function drawGravestones() {
     if (!G.gravestones || G.gravestones.length === 0) return;
     let now = G.date.getTime();
@@ -1120,7 +1271,41 @@ function findNavyGraveAtScreen(sx, sy) {
 }
 
 // ---- 主渲染 ----
-function render() { window._sibBtns = []; window._sibFormBtn = []; window._sidePanelRect = {}; G._countryFlagBtns = [];
+// ===== 山地三层绘制（range 半透明棕/ shade 光影 / ridge 山脊线），使用当前 ctx =====
+function drawTerrainMountainLayers() {
+    // 范围层（画在省份上、阴影之下）
+    if (mountainRangeReady()) {
+        const tl = worldToScreen(-12, 72);
+        const br = worldToScreen(65, 33);
+        const ma = typeof MOUNTAIN_RANGE_ALPHA !== 'undefined' ? MOUNTAIN_RANGE_ALPHA : 1;
+        if (ma < 1) ctx.save();
+        ctx.globalAlpha = ma;
+        ctx.drawImage(window.MOUNTAIN_RANGE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        if (ma < 1) ctx.restore();
+    }
+    // 阴影层（hillshade 光影+山地棕调）
+    if (mountainShadeReady()) {
+        const tl = worldToScreen(-12, 72);
+        const br = worldToScreen(65, 33);
+        const ma = typeof MOUNTAIN_SHADE_ALPHA !== 'undefined' ? MOUNTAIN_SHADE_ALPHA : 1;
+        if (ma < 1) ctx.save();
+        ctx.globalAlpha = ma;
+        ctx.drawImage(window.MOUNTAIN_SHADE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        if (ma < 1) ctx.restore();
+    }
+    // 山脊线层
+    if (mountainRidgeReady()) {
+        const tl = worldToScreen(-12, 72);
+        const br = worldToScreen(65, 33);
+        const ma = typeof MOUNTAIN_RIDGE_ALPHA !== 'undefined' ? MOUNTAIN_RIDGE_ALPHA : 1;
+        if (ma < 1) ctx.save();
+        ctx.globalAlpha = ma;
+        ctx.drawImage(window.MOUNTAIN_RIDGE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        if (ma < 1) ctx.restore();
+    }
+}
+
+function render() { window._sibBtns = []; window._sibFormBtn = []; window._sidePanelRect = {}; G._countryFlagBtns = []; window._railModalBtns = []; window._railModalRect = {};
     try {
     const w = canvas.width, h = canvas.height;
 
@@ -1134,10 +1319,12 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     ctx.fillRect(0, 0, w, h);
 
     // ===== 地形底图（TIFF 转换，海面透明，贴在世界范围内） =====
-    if (terrainReady()) {
-        const tl = worldToScreen(-12, 72);
-        const br = worldToScreen(65, 33);
-        ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+    if (typeof TERRAIN_BG_ENABLED === 'undefined' || TERRAIN_BG_ENABLED) {
+        if (terrainReady()) {
+            const tl = worldToScreen(-12, 72);
+            const br = worldToScreen(65, 33);
+            ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        }
     }
 
     // ===== Offscreen cache for static geometry =====
@@ -1156,7 +1343,7 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
         drawCoastGrid();
         ctx = sc;
 
-        // Borders + rivers cache (drawn after province fills)
+        // Borders + rivers + 山地三层 cache (drawn after province fills)
         if (!window._borderCache || window._borderCache.width !== w || window._borderCache.height !== h) {
             let c = document.createElement('canvas');
             c.width = w; c.height = h;
@@ -1166,6 +1353,8 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
         ctx = bc; bc.clearRect(0, 0, w, h);
         drawRivers();
         drawBorders();
+        // 山地三层并入静态缓存：避免每帧 3 次 3080×1560 大图缩放
+        drawTerrainMountainLayers();
         ctx = sc;
 
         window._staticViewKey = viewKey;
@@ -1175,43 +1364,28 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     // Draw provinces directly (native canvas handles ~200 polygons at 60fps)
     drawProvinces();
 
-    // Blit borders + rivers cache on top of province fills
+    // Blit borders + rivers + 山地 cache on top of province fills
     ctx.drawImage(window._borderCache, 0, 0);
-    // ===== 山地阴影层（hillshade 光影+山地棕调，画在省份上） =====
-    if (mountainShadeReady()) {
-        const tl = worldToScreen(-12, 72);
-        const br = worldToScreen(65, 33);
-        const ma = typeof MOUNTAIN_SHADE_ALPHA !== 'undefined' ? MOUNTAIN_SHADE_ALPHA : 1;
-        if (ma < 1) ctx.save();
-        ctx.globalAlpha = ma;
-        ctx.drawImage(window.MOUNTAIN_SHADE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
-        if (ma < 1) ctx.restore();
-    }
-    // ===== 山脊线层（真实山脊线，画在阴影之上） =====
-    if (mountainRidgeReady()) {
-        const tl = worldToScreen(-12, 72);
-        const br = worldToScreen(65, 33);
-        const ma = typeof MOUNTAIN_RIDGE_ALPHA !== 'undefined' ? MOUNTAIN_RIDGE_ALPHA : 1;
-        if (ma < 1) ctx.save();
-        ctx.globalAlpha = ma;
-        ctx.drawImage(window.MOUNTAIN_RIDGE_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
-        if (ma < 1) ctx.restore();
-    }
+    drawRailways();
     drawGravestones();
     drawNavyGraves();
 
     // UI on top (screen coordinates)
     drawSelection();
     drawCountryNames();
+    // 工厂视图模式：显示工厂 + 城市名称 + 军队；正常模式则隐藏工厂
+    if (G._factoryView) {
+        drawFactories();
+    }
     drawCities();
     drawNavalBases();
-    drawFactories();
-    drawFireZones();
     drawDivisions();
+    drawFireZones();
     drawCountrySidebar();
     drawSelBox();
     drawGameInfo();
     drawMouseCoords();
+    drawTerrainHover();
     drawGameTopBar();
     drawBorder();
     drawGameBottomBar();
@@ -1252,6 +1426,7 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     }
     drawActionBar();
     drawSelectedUnitSidebar();
+    drawRailModal();
     drawGameLog();
     drawEventPopup();
     drawSavePanel();
@@ -1260,7 +1435,112 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     drawLeftPanelIfNeeded();
     drawFrontlineOverlay();
     drawGameOverPanel();
+    drawSupplyView();
+    drawFactoryToggle();
+    drawSupplyButton();
+    drawRailButton();
 } catch(e) { console.error(e); }
+}
+
+// ===== 补给视图：己方城市补给圈（按类型着色，重叠加深）+ 城市名(X个师) =====
+function drawSupplyView() {
+    if (!G.supplyView || !G.cities || !G.playerCountry) return;
+    ctx.save();
+    let kmPerDeg = (typeof KM_PER_DEG !== 'undefined') ? KM_PER_DEG : 111;
+    for (let cid in G.cities) {
+        let c = G.cities[cid];
+        if (!c || c.grainMax === undefined || c.owner !== G.playerCountry || c.hp <= 0) continue;
+        let k = (typeof cityGrainCfgKey === 'function') ? cityGrainCfgKey(c) : 'small';
+        let cfg = (typeof GRAIN_CITY_CFG !== 'undefined' && GRAIN_CITY_CFG[k]) ? GRAIN_CITY_CFG[k] : { color: '#9aa0a8' };
+        let isSmall = k === 'small';
+        // 低缩放（战略层）只画大圈：首都/大城市/农业城市，小城市圈过密跳过
+        if (isSmall && zoom <= 0.35) continue;
+        let [sx, sy] = worldToScreen(c.lon, c.lat);
+        if (sx < -400 || sx > canvas.width + 400 || sy < -400 || sy > canvas.height + 400) continue;
+        let rDeg = (c.supplyRadius || 50) / kmPerDeg / Math.max(0.2, Math.cos(c.lat * Math.PI / 180));
+        let [rx2, ry2] = worldToScreen(c.lon + rDeg, c.lat);
+        let rPix = Math.abs(rx2 - sx);
+        if (isSmall) {
+            // 小城市只画细虚线描边，不填充不标签（城市数量多，避免糊成一片）
+            ctx.beginPath(); ctx.arc(sx, sy, rPix, 0, Math.PI * 2);
+            ctx.strokeStyle = cfg.color + '55';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([3, 4]);
+            ctx.stroke(); ctx.setLineDash([]);
+        } else {
+            ctx.beginPath(); ctx.arc(sx, sy, rPix, 0, Math.PI * 2);
+            ctx.fillStyle = cfg.color + '18';
+            ctx.fill();
+            ctx.strokeStyle = cfg.color + '88';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([6, 5]);
+            ctx.stroke(); ctx.setLineDash([]);
+            let label = c.name + " (" + (c.suppliedDivs || 0) + "个师)";
+            ctx.font = "10px Georgia,serif";
+            ctx.textAlign = "center"; ctx.textBaseline = "middle";
+            let tw = ctx.measureText(label).width;
+            ctx.fillStyle = "rgba(10,12,18,0.75)";
+            ctx.fillRect(sx - tw/2 - 4, sy - 14, tw + 8, 14);
+            ctx.fillStyle = cfg.color;
+            ctx.fillText(label, sx, sy - 7);
+        }
+    }
+    ctx.restore();
+}
+
+// ===== 补给视图按钮（右下角，工厂按钮上方） =====
+function drawSupplyButton() {
+    let isActive = !!G.supplyView;
+    let btnW = 44, btnH = 28;
+    let btnX = canvas.width - btnW - 8, btnY = canvas.height - BOTTOM_BAR_HEIGHT - 74;
+    ctx.save();
+    ctx.fillStyle = isActive ? "rgba(120,180,90,0.35)" : "rgba(22,16,10,0.85)";
+    CT.roundRectPath(ctx, btnX, btnY, btnW, btnH, 4);
+    ctx.fill();
+    ctx.strokeStyle = isActive ? "rgba(120,180,90,0.7)" : "rgba(180,140,80,0.3)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = isActive ? "#a8d868" : "#d4c0a0";
+    ctx.fillText("🌾", btnX + btnW/2, btnY + btnH/2);
+    if (isActive) {
+        ctx.fillStyle = "rgba(120,180,90,0.3)";
+        ctx.fillRect(btnX, btnY + btnH - 2, btnW, 2);
+    }
+    window._supplyBtnRect = { x: btnX, y: btnY, w: btnW, h: btnH };
+    ctx.restore();
+}
+
+function drawFactoryToggle() {
+    let isActive = !!G._factoryView;
+    let btnW = isActive ? 56 : 44, btnH = 28;
+    let btnX = canvas.width - btnW - 8, btnY = canvas.height - BOTTOM_BAR_HEIGHT - 38;
+    ctx.save();
+    ctx.fillStyle = isActive ? "rgba(200,168,48,0.35)" : "rgba(22,16,10,0.85)";
+    CT.roundRectPath(ctx, btnX, btnY, btnW, btnH, 4);
+    ctx.fill();
+    ctx.strokeStyle = isActive ? "rgba(200,168,48,0.7)" : "rgba(180,140,80,0.3)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    if (isActive) {
+        ctx.font = "bold 11px Georgia,serif";
+        ctx.fillStyle = "#e8d8b0";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("返回", btnX + btnW/2, btnY + btnH/2);
+    } else {
+        ctx.font = "16px sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("🏭", btnX + btnW/2, btnY + btnH/2);
+    }
+    if (isActive) {
+        ctx.fillStyle = "rgba(200,168,48,0.3)";
+        ctx.fillRect(btnX, btnY + btnH - 2, btnW, 2);
+    }
+    window._factoryBtnRect = { x: btnX, y: btnY, w: btnW, h: btnH };
+    ctx.restore();
 }
 
 function drawGameOverPanel() {

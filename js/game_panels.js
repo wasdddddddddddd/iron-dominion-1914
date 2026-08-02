@@ -79,9 +79,9 @@ function _loadAndProcess(src, targetObj, key, pixelate = false) {
     img.onload = function() {
         let processed = img;
         if (pixelate) {
-            // 降低分辨率实现像素化效果
+            // 降低分辨率实现像素化效果（陆军+50%：0.4 → 0.25，海军/建筑不受影响）
             const offCanvas = document.createElement('canvas');
-            const scale = 0.4;
+            const scale = 0.25;
             offCanvas.width = Math.max(1, Math.floor(img.width * scale));
             offCanvas.height = Math.max(1, Math.floor(img.height * scale));
             const oc = offCanvas.getContext('2d');
@@ -102,51 +102,61 @@ const COUNTRY_IMG_FOLDER = {
     'UK': 'uk', 'FRANCE': 'france', 'GERMANY': 'germany',
     'AUSTRIA_HUNGARY': 'austria', 'ITALY': 'italy', 'RUSSIA': 'russia'
 };
-// 国家专属贴图类型（步兵、骑兵、海军；工兵/炮兵/潜艇不区分国家）
-const COUNTRY_SPECIFIC_TYPES = ['infantry', 'cavalry', 'navy'];
+// 国家专属贴图类型（所有陆军兵种+海军+空军；潜艇不区分国家）
+const COUNTRY_SPECIFIC_TYPES = ['infantry', 'cavalry', 'navy', 'airplane', 'artillery', 'engineer', 'mountain'];
 
 function preloadUnitImages() {
-    // 通用单位贴图（工兵/炮兵/潜艇所有国家共用，步兵/骑兵/海军非列强国家使用）
-    // 海军不像素化，其余单位降低分辨率实现像素化效果
+    // 通用单位贴图（工兵/炮兵/潜艇/山地师所有国家共用，步兵/骑兵/海军/空军非列强国家使用）
+    // 海军/空军不像素化，其余单位降低分辨率实现像素化效果
     for (let [type, cfg] of Object.entries(UNIT_TYPES)) {
-        if (cfg.img) _loadAndProcess(cfg.img, UNIT_IMAGES, type, type !== 'navy');
+        if (cfg.img) _loadAndProcess(cfg.img, UNIT_IMAGES, type, type !== 'navy' && type !== 'airplane');
     }
-    // 加载六大列强国家专属贴图（步兵、骑兵像素化，海军不像素化）
+    // 加载六大列强国家专属贴图（步兵、骑兵像素化，海军、空军不像素化）
     for (let [country, folder] of Object.entries(COUNTRY_IMG_FOLDER)) {
         for (let type of COUNTRY_SPECIFIC_TYPES) {
-            _loadAndProcess('images/' + folder + '/' + type + '.png', UNIT_IMAGES, country + '_' + type, type !== 'navy');
+            _loadAndProcess('images/units/' + folder + '/' + type + '.png', UNIT_IMAGES, country + '_' + type, type !== 'navy' && type !== 'airplane');
         }
     }
     // 建筑物图片（不像素化）
-    _loadAndProcess('images/building_capital.png', BUILDING_IMAGES, 'capital');
-    _loadAndProcess('images/building_major.png', BUILDING_IMAGES, 'major');
-    _loadAndProcess('images/building_small.png', BUILDING_IMAGES, 'small');
-    _loadAndProcess('images/building_factory.png', BUILDING_IMAGES, 'factory');
-    _loadAndProcess('images/building_naval.png', BUILDING_IMAGES, 'naval');
+    _loadAndProcess('images/buildings/capital.png', BUILDING_IMAGES, 'capital');
+    _loadAndProcess('images/buildings/major.png', BUILDING_IMAGES, 'major');
+    _loadAndProcess('images/buildings/small.png', BUILDING_IMAGES, 'small');
+    _loadAndProcess('images/buildings/factory.png', BUILDING_IMAGES, 'factory');
+    _loadAndProcess('images/buildings/naval.png', BUILDING_IMAGES, 'naval');
     // 加载六大列强国家专属首都贴图
     for (let [country, folder] of Object.entries(COUNTRY_IMG_FOLDER)) {
-        _loadAndProcess('images/' + folder + '/capital.png', BUILDING_IMAGES, country + '_capital');
+        _loadAndProcess('images/buildings/capitals/' + folder + '.png', BUILDING_IMAGES, country + '_capital');
     }
 }
 
 // ===== 地形底图（由 exportImage.tiff 转换，海面已透明） =====
+// 加载山地贴图：优先文件（带版本号），失败时回退到内嵌 base64（TERRAIN_IMG_B64），彻底绕过浏览器网络/缓存问题
+function _loadTerrainLayer(winKey, fileSrc, b64Key) {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = function() { window[winKey] = img; };
+    img.onerror = function() {
+        console.warn('Failed to load ' + fileSrc + '，使用内嵌数据');
+        const fb = new Image();
+        fb.onload = function() { window[winKey] = fb; };
+        fb.onerror = function() { window[winKey] = null; };
+        if (typeof TERRAIN_IMG_B64 !== 'undefined' && TERRAIN_IMG_B64[b64Key]) fb.src = 'data:image/png;base64,' + TERRAIN_IMG_B64[b64Key];
+        else window[winKey] = null;
+    };
+    img.src = fileSrc;
+    window[winKey] = img;
+}
 function preloadTerrain() {
     const img = new Image();
+    img.crossOrigin = 'anonymous';
     img.onload = function() { window.TERRAIN_IMG = img; };
     img.onerror = function() { console.warn('Failed to load terrain image'); window.TERRAIN_IMG = null; };
-    img.src = 'images/terrain_land.png';
+    img.src = 'images/terrain/terrain_land.png?v=11';
     window.TERRAIN_IMG = img;
     // 山地图层：阴影（画省份下）+ 山脊线（画省份上）
-    const shade = new Image();
-    shade.onload = function() { window.MOUNTAIN_SHADE_IMG = shade; };
-    shade.onerror = function() { console.warn('Failed to load mountain shade'); window.MOUNTAIN_SHADE_IMG = null; };
-    shade.src = 'images/mountain_shade.png';
-    window.MOUNTAIN_SHADE_IMG = shade;
-    const ridge = new Image();
-    ridge.onload = function() { window.MOUNTAIN_RIDGE_IMG = ridge; };
-    ridge.onerror = function() { console.warn('Failed to load mountain ridge'); window.MOUNTAIN_RIDGE_IMG = null; };
-    ridge.src = 'images/mountain_ridge.png';
-    window.MOUNTAIN_RIDGE_IMG = ridge;
+    _loadTerrainLayer('MOUNTAIN_SHADE_IMG', 'images/terrain/mountain_shade.png?v=11', 'mountain_shade');
+    _loadTerrainLayer('MOUNTAIN_RIDGE_IMG', 'images/terrain/mountain_ridge.png?v=11', 'mountain_ridge');
+    _loadTerrainLayer('MOUNTAIN_RANGE_IMG', 'images/terrain/mountain_range.png?v=11', 'mountain_range');
 }
 function terrainReady() {
     return !!(typeof window.TERRAIN_IMG !== 'undefined' && window.TERRAIN_IMG && window.TERRAIN_IMG.complete && window.TERRAIN_IMG.naturalWidth > 0);
@@ -156,6 +166,9 @@ function mountainShadeReady() {
 }
 function mountainRidgeReady() {
     return !!(typeof window.MOUNTAIN_RIDGE_IMG !== 'undefined' && window.MOUNTAIN_RIDGE_IMG && window.MOUNTAIN_RIDGE_IMG.complete && window.MOUNTAIN_RIDGE_IMG.naturalWidth > 0);
+}
+function mountainRangeReady() {
+    return !!(typeof window.MOUNTAIN_RANGE_IMG !== 'undefined' && window.MOUNTAIN_RANGE_IMG && window.MOUNTAIN_RANGE_IMG.complete && window.MOUNTAIN_RANGE_IMG.naturalWidth > 0);
 }
 
 // ===== 加载旗帜贴图 =====
@@ -399,7 +412,51 @@ ctx.setLineDash([]);
 ctx.restore();
 }
 
+// ===== 单位贴图 sprite 缓存：贴图+阴影预渲染成小 canvas，按 (国家_类型_尺寸_翻转) 缓存 =====
+const UNIT_SPRITE_CACHE = {};
+function unitSprite(div, imgSize, flip) {
+    let countryImg = UNIT_IMAGES[div.country + '_' + div.type];
+    let img = countryImg || UNIT_IMAGES[div.type];
+    if (!img || !(img.width > 0)) return null;
+    let s = Math.max(6, Math.round(imgSize));
+    let key = div.country + '_' + div.type + '_' + s + (flip ? '_f' : '');
+    let c = UNIT_SPRITE_CACHE[key];
+    if (c) return c;
+    c = document.createElement('canvas');
+    let W = s + 6, H = s + 6;
+    c.width = W; c.height = H;
+    let cc = c.getContext('2d');
+    let shY = div.type === 'navy' ? s * 0.7 : s * 0.82;
+    cc.beginPath();
+    cc.ellipse(W / 2, shY, s * 0.38, s * 0.06, 0, 0, Math.PI * 2);
+    cc.fillStyle = 'rgba(0,0,0,0.25)';
+    cc.fill();
+    if (div.type !== 'navy') cc.imageSmoothingEnabled = false;
+    let imgY = div.type === 'airplane' ? Math.round(s * 0.35) : Math.round(s * 0.5);
+    if (flip) {
+        cc.translate(W / 2, 0);
+        cc.scale(-1, 1);
+        cc.drawImage(img, -s / 2, imgY - s / 2, s, s);
+    } else {
+        cc.drawImage(img, W / 2 - s / 2, imgY - s / 2, s, s);
+    }
+    UNIT_SPRITE_CACHE[key] = c;
+    // 容量上限：超过 400 张时整体清空（拖拽缩放时 imgSize 档位变化会积累缓存）
+    if (UNIT_SPRITE_CACHE.__n === undefined) UNIT_SPRITE_CACHE.__n = 0;
+    if (++UNIT_SPRITE_CACHE.__n > 400) {
+        UNIT_SPRITE_CACHE.__n = 0;
+        for (let k in UNIT_SPRITE_CACHE) if (k !== '__n') delete UNIT_SPRITE_CACHE[k];
+    }
+    return c;
+}
+
+// ===== 扬尘用 sin/cos 查找表（避免每帧每颗粒子调用 Math.sin/cos） =====
+const DUST_SIN_T = (() => { const a = new Float32Array(1024); for (let i = 0; i < 1024; i++) a[i] = Math.sin(i / 1024 * Math.PI * 2); return a; })();
+
 function drawDivisions() {
+    // 每帧一次构建的索引（替代各循环内线性 find/includes）
+    let _divByIdMap = new Map();
+    for (let _x of G.divisions) _divByIdMap.set(_x.id, _x);
     // 1) Projectiles
     if (G.projectiles) {
         for (let p of G.projectiles) {
@@ -438,7 +495,12 @@ function drawDivisions() {
         if (rx===null) { let pd = G.provinceData[singleSel.province]; if(pd&&pd.center){rx=pd.center[0];ry=pd.center[1];} }
         let [sx, sy] = worldToScreen(rx, ry);
         let ut = UNIT_TYPES[singleSel.type] || UNIT_TYPES.infantry;
-        let [rx2, ry2] = worldToScreen(rx + ut.range, ry);
+        let cRange = ut.range;
+        // 炮兵位于山地：射程 +20%，动态调整射程圈
+        if (singleSel.type === 'artillery' && typeof terrainAt === 'function' && terrainAt(rx, ry) === 'mountains') {
+            cRange *= 1 + (typeof ARTILLERY_MOUNTAIN_RANGE_BONUS !== 'undefined' ? ARTILLERY_MOUNTAIN_RANGE_BONUS : 0.2);
+        }
+        let [rx2, ry2] = worldToScreen(rx + cRange, ry);
         let rPixels = Math.abs(rx2 - sx);
         ctx.save();
         ctx.beginPath(); ctx.arc(sx, sy, rPixels, 0, Math.PI*2);
@@ -482,8 +544,9 @@ function drawDivisions() {
     // Check if a unit has focus target (for focus fire visual)
     // 陆军/海军缩放到大城市级别（zoom>0.35）时显示
     if (zoom > 0.35) {
-    for (let div of G.divisions) {
-        let rx = (div.rx!==undefined) ? div.rx : null;
+    let _selSet = new Set(G.selectedDivisions || []);
+    let _nowMs = performance.now();
+    for (let div of G.divisions) {        let rx = (div.rx!==undefined) ? div.rx : null;
         let ry = (div.ry!==undefined) ? div.ry : null;
         if (rx===null) {
             let pd = G.provinceData[div.province];
@@ -493,10 +556,14 @@ function drawDivisions() {
         let [sx, sy] = worldToScreen(rx, ry);
         if (sx < -100 || sx > canvas.width + 100 || sy < -100 || sy > canvas.height + 100) continue;
         let isPlayer = div.country === G.playerCountry;
-        let isSel = G.selectedDivisions.includes(div.id);
+        let isSel = _selSet.has(div.id);
         let BASE = 7;
-        let r = isSel ? BASE + 3 : BASE;
         let ut = UNIT_TYPES[div.type] || UNIT_TYPES.infantry;
+        // 战术层缩放：zoom 低于 TACTICAL_ZOOM 时单位和建筑保持固定大小，不再随视野拉远缩小
+        let effZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
+        let imgSize = (div.type === 'navy' ? BASE * 5 : BASE * 0.875) * effZoom; // 海军不变，陆军缩小1/2
+        let r = 6; // 基础指示器半径（扬尘、集火等）
+        let selR = isSel ? (div.type === 'navy' ? imgSize * 0.55 : imgSize * 0.50) : 0; // 选中圈随单位等比缩放
 
         // === 选中时才显示外交圈 ===
         if (isSel) {
@@ -507,26 +574,17 @@ function drawDivisions() {
             else if (isAtWar) bgColor = "rgba(255,80,80,0.24)";
             else if (isAlly) bgColor = "rgba(80,160,255,0.22)";
             else bgColor = "rgba(255,255,150,0.16)";
-            ctx.beginPath(); ctx.arc(sx, sy, r + 4, 0, Math.PI*2);
+            ctx.beginPath(); ctx.arc(sx, sy, selR + 4, 0, Math.PI*2);
             ctx.fillStyle = bgColor; ctx.fill();
             ctx.strokeStyle = bgColor.replace('0.24','0.5').replace('0.22','0.45').replace('0.16','0.35');
             ctx.lineWidth = 2; ctx.stroke();
         }
 
-        // 国家色圆点（始终显示，但未选中时更小更淡）
-        if (isSel) {
-            ctx.shadowColor = "#c8a830"; ctx.shadowBlur = 10;
-        }
-        ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI*2);
-        ctx.fillStyle = COUNTRY_COLORS[div.country] || "#888";
-        ctx.fill();
-        ctx.shadowBlur = 0;
-        if (isSel) { ctx.strokeStyle = "#c8a830"; ctx.lineWidth = 2; ctx.stroke(); }
+        // 国家色圆点（已移除，所有单位不显示国家底色）
 
-        // === 脚底阴影（在单位贴图下方，潜水艇下潜时不显示） ===
-        let imgSize = div.type === 'navy' ? r * 9 : r * 3.5;
-        if (div.type !== 'submarine' || !div.submerged) {
-            let shadowY = sy + imgSize * 0.5;
+        // === 脚底阴影（预渲染进 sprite 缓存；潜艇特殊处理） ===
+        if (div.type === 'submarine' && !div.submerged) {
+            let shadowY = sy + imgSize * 0.35;
             let shadowRX = imgSize * 0.38;
             let shadowRY = imgSize * 0.06;
             ctx.beginPath();
@@ -535,43 +593,51 @@ function drawDivisions() {
             ctx.fill();
         }
 
-        // === Draw pixel art unit image (country-specific, Canvas flip for direction) ===
+        // === Draw pixel art unit image（贴图+阴影合一 sprite 缓存，替代每帧大图缩放+ellipse） ===
         let countryImg = UNIT_IMAGES[div.country + '_' + div.type];
         let img = countryImg || UNIT_IMAGES[div.type];
         ctx.save();
-        if (div.type === 'submarine') {
-            let subAlpha = 1;
-            if (div.submerged) subAlpha = 0.3;
-            else if (div.diving) subAlpha = 0.3 + 0.7 * (1 - (div.diveProgress || 0));
-            ctx.globalAlpha = subAlpha;
-        }
-        if (img && img.width > 0) {
-            // 非潜艇单位轻微透明，让像素图融入纯色地图
-            if (div.type !== 'submarine') {
+        let usingSprite = false;
+        if (div.type !== 'submarine') {
+            const shouldFlip = (div.moveDx || 0) < 0;
+            let spr = unitSprite(div, imgSize, shouldFlip);
+            if (spr) {
+                usingSprite = true;
                 ctx.globalAlpha = div.type === 'navy' ? 0.92 : 0.85;
+                let imgY = div.type === 'airplane' ? sy - imgSize * 0.35 : sy;
+                ctx.drawImage(spr, sx - spr.width / 2, imgY - spr.height / 2, spr.width, spr.height);
             }
-            // 像素化单位关闭平滑以保留锯齿效果，海军保持原样
-            if (div.type !== 'navy') ctx.imageSmoothingEnabled = false;
-            // 方向翻转：德奥俄贴图默认朝左，英法意默认朝右，镜像逻辑相反
-            const LEFT_FACING_COUNTRIES = ['GERMANY', 'AUSTRIA_HUNGARY', 'RUSSIA'];
-            const isLeftFacing = LEFT_FACING_COUNTRIES.includes(div.country);
-            // 右朝向贴图：朝西(w)时翻转；左朝向贴图：朝东(e)或无朝向时翻转
-            const shouldFlip = (div.facing === 'w' && !isLeftFacing) ||
-                               ((div.facing === 'e' || !div.facing) && isLeftFacing);
-            if (shouldFlip) {
-                ctx.translate(sx, sy);
-                ctx.scale(-1, 1);
-                ctx.drawImage(img, -imgSize/2, -imgSize/2, imgSize, imgSize);
+        }
+        if (!usingSprite) {
+            // 潜艇（动态 alpha）或贴图未加载：原绘制路径
+            if (div.type === 'submarine') {
+                let subAlpha = 1;
+                if (div.submerged) subAlpha = 0.3;
+                else if (div.diving) subAlpha = 0.3 + 0.7 * (1 - (div.diveProgress || 0));
+                ctx.globalAlpha = subAlpha;
+            }
+            if (img && img.width > 0) {
+                if (div.type !== 'submarine') {
+                    ctx.globalAlpha = div.type === 'navy' ? 0.92 : 0.85;
+                }
+                if (div.type !== 'navy') ctx.imageSmoothingEnabled = false;
+                const shouldFlip = (div.moveDx || 0) < 0;
+                let imgY = div.type === 'airplane' ? sy - imgSize * 0.35 : sy;
+                if (shouldFlip) {
+                    ctx.translate(sx, sy);
+                    ctx.scale(-1, 1);
+                    ctx.drawImage(img, -imgSize/2, imgY - sy - imgSize/2, imgSize, imgSize);
+                } else {
+                    ctx.drawImage(img, sx - imgSize/2, imgY - imgSize/2, imgSize, imgSize);
+                }
+                if (div.type !== 'navy') ctx.imageSmoothingEnabled = true;
             } else {
-                ctx.drawImage(img, sx - imgSize/2, sy - imgSize/2, imgSize, imgSize);
+                // 后备：图片未加载完成时显示emoji
+                ctx.font = (r*1.5)+"px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
+                ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                ctx.fillStyle = "#fff";
+                ctx.fillText(ut.sym, sx, sy-1);
             }
-            if (div.type !== 'navy') ctx.imageSmoothingEnabled = true;
-        } else {
-            // 后备：图片未加载完成时显示emoji
-            ctx.font = (r*1.5)+"px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
-            ctx.textAlign = "center"; ctx.textBaseline = "middle";
-            ctx.fillStyle = "#fff";
-            ctx.fillText(ut.sym, sx, sy-1);
         }
         // 下潜状态提示（水波纹）
         if (div.submerged) {
@@ -582,25 +648,63 @@ function drawDivisions() {
         }
         ctx.restore();
 
-        // === 陆军移动扬尘效果 ===
+        // === 陆军移动扬尘效果（4 粒 fillRect + 查找表，保证可见且低开销） ===
         let isMoving = div.state === 'moving' || div.moving || (div.targetX !== null && div.targetX !== undefined);
         if (isMoving && div.type !== 'navy' && div.type !== 'submarine') {
-            let realNow = performance.now();
-            let dustCount = 6;
             let dustBaseY = sy + imgSize * 0.45;
-            for (let i = 0; i < dustCount; i++) {
-                let seed = div.id * 100 + i;
-                let angle = (realNow / 900 + seed * 1.7) % (Math.PI * 2);
-                let dist = r * 1.0 + Math.sin(realNow / 500 + seed) * r * 0.5;
-                let dx = Math.cos(angle) * dist;
-                let dy = Math.sin(angle) * dist * 0.3;
-                let alpha = 0.18 + Math.sin(realNow / 350 + seed * 2.3) * 0.10;
-                let size = 1.5 + Math.sin(realNow / 280 + seed * 0.9) * 0.8;
-                ctx.beginPath();
-                ctx.arc(sx + dx, dustBaseY + dy, size, 0, Math.PI * 2);
-                ctx.fillStyle = 'rgba(160,140,115,' + alpha.toFixed(2) + ')';
-                ctx.fill();
+            let ph = (_nowMs / 500) & 1023;
+            let ph2 = (_nowMs / 280) & 1023;
+            let st = DUST_SIN_T;
+            let seedBase = (div.id * 97) & 1023;
+            ctx.fillStyle = 'rgba(205,190,160,0.45)';
+            for (let i = 0; i < 4; i++) {
+                let seed = (seedBase + i * 257) & 1023;
+                let angIdx = (ph + seed) & 1023;
+                let dist = r * 0.6 + st[(ph2 / 2 + seed * 3) & 1023] * r * 0.55;
+                let size = 2.2 + st[(ph2 + seed * 5) & 1023] * 1.2;
+                let dx = st[(angIdx + 256) & 1023] * dist;
+                let dy = st[angIdx] * dist * 0.35;
+                ctx.fillRect(sx + dx - size / 2, dustBaseY + dy - size / 2, size, size);
             }
+        }
+
+        // === 铁路运兵乘车中：蒸汽烟迹 + 🚂 标记 + 当前轨道段高亮 ===
+        if (div.railTrip && div.railTrip.stage === 'on_train' && div.railTrip.path) {
+            let rt = div.railTrip;
+            let segA = rt.path[rt.seg], segB = rt.path[rt.seg + 1];
+            let cA = G.cities[segA], cB = G.cities[segB];
+            if (cA && cB) {
+                let [ax, ay] = worldToScreen(cA.lon, cA.lat);
+                let [bx, by] = worldToScreen(cB.lon, cB.lat);
+                ctx.strokeStyle = "rgba(255,210,90,0.5)";
+                ctx.lineWidth = 1.2;
+                ctx.setLineDash([6, 4]);
+                ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
+                ctx.setLineDash([]);
+                // 轨道沿线站点闪烁小点
+                let dots = 3;
+                for (let i = 1; i <= dots; i++) {
+                    let t = i / (dots + 1);
+                    let [px, py] = worldToScreen(cA.lon + (cB.lon - cA.lon) * t, cA.lat + (cB.lat - cA.lat) * t);
+                    ctx.fillStyle = "rgba(255,210,90," + (0.25 + 0.15 * Math.sin(performance.now() / 180 + i)) + ")";
+                    ctx.beginPath(); ctx.arc(px, py, 1.5, 0, Math.PI * 2); ctx.fill();
+                }
+            }
+            // 蒸汽烟迹（沿行进反方向）
+            let ph = (performance.now() / 160) & 255;
+            for (let i = 0; i < 3; i++) {
+                let off = ((ph + i * 60) % 160) / 160;
+                let px = sx - (div.moveDx > 0 ? 1 : -1) * off * imgSize * 1.1;
+                let py = sy - imgSize * 0.35 - off * imgSize * 0.5;
+                ctx.fillStyle = "rgba(220,220,220," + (0.35 * (1 - off)) + ")";
+                ctx.beginPath(); ctx.arc(px, py, 2 + (1 - off) * 2.5, 0, Math.PI * 2); ctx.fill();
+            }
+            ctx.font = "14px 'Segoe UI Emoji','Apple Color Emoji','Noto Color Emoji',sans-serif";
+            ctx.textAlign = "center";
+            ctx.textBaseline = "bottom";
+            ctx.fillText("🚂", sx, sy - imgSize * 0.55 - 4);
+            ctx.textAlign = "left";
+            ctx.textBaseline = "alphabetic";
         }
 
         // === Patrol shield icon above unit ===
@@ -609,6 +713,15 @@ function drawDivisions() {
             ctx.textAlign = "center";
             ctx.fillStyle = "rgba(60,200,255,0.9)";
             ctx.fillText("🛡️", sx, sy - r - (div.formation === 'line' ? 20 : 8));
+        }
+
+        // === 断粮警告 🚫🌾（仅己方部队显示，避免泄露敌方补给情报；数字=剩余口粮天数，归零后每天减员） ===
+        if (div.country === G.playerCountry && div.supplyStatus === 'starve') {
+            ctx.font = "11px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillStyle = "rgba(255,90,70,0.95)";
+            let _rat = Math.max(0, Math.floor(div.rations === undefined ? 0 : div.rations));
+            ctx.fillText("🚫🌾" + _rat, sx, sy - r - 22);
         }
 
         // Show focus target indicator
@@ -629,10 +742,21 @@ function drawDivisions() {
             ctx.fillText("⛓️", sx, sy - r - 8);
         }
 
-        if (div.strength < div.maxStrength) {
-            ctx.fillStyle = "rgba(0,0,0,0.6)"; ctx.fillRect(sx - r - 1, sy - r - 5, (r+1)*2, 2);
-            ctx.fillStyle = div.strength > 50 ? "#7a9a5a" : "#b05040";
-            ctx.fillRect(sx - r - 1, sy - r - 5, (r+1)*2 * (div.strength / div.maxStrength), 2);
+        // 选中时始终显示血条，未选中仅受伤时显示
+        if (isSel || div.strength < div.maxStrength) {
+            let hpBarW = Math.max(12, imgSize * 0.85);
+            let hpBarH = 4;
+            let hpBarY = sy - imgSize * 0.55 - 4;
+            // 暗底
+            ctx.fillStyle = "rgba(0,0,0,0.75)"; ctx.fillRect(sx - hpBarW/2, hpBarY, hpBarW, hpBarH);
+            // 彩色进度
+            let hpRatio = Math.max(0, div.strength / div.maxStrength);
+            let hpColor = hpRatio > 0.6 ? "#7a9a5a" : hpRatio > 0.3 ? "#c8a830" : "#b05040";
+            ctx.fillStyle = hpColor;
+            ctx.fillRect(sx - hpBarW/2, hpBarY, hpBarW * hpRatio, hpBarH);
+            // 边框
+            ctx.strokeStyle = "rgba(255,255,255,0.35)"; ctx.lineWidth = 0.5;
+            ctx.strokeRect(sx - hpBarW/2, hpBarY, hpBarW, hpBarH);
         }
 
         // === Reload cooldown bar (blue) below unit ===
@@ -712,7 +836,7 @@ function drawDivisions() {
         if (div.country !== G.playerCountry) continue;
         let targetId = div.focusTarget;
         if (!targetId) continue;
-        let target = G.divisions.find(d => d.id === targetId);
+        let target = _divByIdMap.get(targetId);
         if (!target || target.strength <= 0) { div.focusTarget = null; continue; }
 
         let [sx, sy] = worldToScreen(div.rx, div.ry);
@@ -744,22 +868,31 @@ function drawDivisions() {
     ctx.restore();
 
     // ===== Formation connecting lines =====
-    // 快速检查：是否有任何一字阵单位
-    let hasLine = false;
-    for (let d of G.divisions) { if (d.formation === 'line') { hasLine = true; break; } }
-    if (hasLine) {
+    // 快速检查 + 省份分桶（一字阵单位必然同省相邻，替代 O(N²) 两两配对）
+    let lineBuckets = {};
+    let lineCount = 0;
+    for (let d of G.divisions) {
+        if (d.formation !== 'line') continue;
+        lineCount++;
+        let kb = d.province || 'x';
+        (lineBuckets[kb] || (lineBuckets[kb] = [])).push(d);
+    }
+    if (lineCount > 1) {
     ctx.save();
     ctx.strokeStyle = "rgba(60,200,255,0.25)";
     ctx.lineWidth = 1.5;
-    for (let d of G.divisions) {
-        if (d.formation !== 'line') continue;
-        for (let e of G.divisions) {
-            if (e.formation !== 'line' || d.id >= e.id) continue;
-            let dist = Math.hypot(d.rx - e.rx, d.ry - e.ry);
-            if (dist < 0.5) {
-                let [x1, y1] = worldToScreen(d.rx, d.ry);
-                let [x2, y2] = worldToScreen(e.rx, e.ry);
-                ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    for (let kb in lineBuckets) {
+        let arr = lineBuckets[kb];
+        for (let i = 0; i < arr.length; i++) {
+            let d = arr[i];
+            for (let j = i + 1; j < arr.length; j++) {
+                let e = arr[j];
+                let dist = Math.hypot(d.rx - e.rx, d.ry - e.ry);
+                if (dist < 0.5) {
+                    let [x1, y1] = worldToScreen(d.rx, d.ry);
+                    let [x2, y2] = worldToScreen(e.rx, e.ry);
+                    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+                }
             }
         }
     }
@@ -863,7 +996,7 @@ function drawDivisions() {
     // ===== Patrol indicator: show which units are on patrol (single-province home guard) =====
     ctx.save();
     for (let did in G.patrolTargets) {
-        let d = G.divisions.find(x => x.id == did);
+        let d = _divByIdMap.get(Number(did));
         if (!d) continue;
         let [sx, sy] = worldToScreen(d.rx, d.ry);
         ctx.beginPath(); ctx.arc(sx, sy, 11, 0, Math.PI * 2);
@@ -1099,19 +1232,25 @@ function drawCityPanel() {
         cityQueue = G.buildQueue.filter(bq => bq.cityId === city.id);
     }
 
-    let x = canvas.width - 310;
+    let x = canvas.width - 520;
     let y = TOP_BAR_HEIGHT + 10;
-    let w = 300;
+    let w = 500;
     // 面板高度：按实际布局逐项计算并留底部空白，避免建造队列被截断
     let isOccupiedCity = cityData && cityData.occupierFlag;
     let typeCount = isOwn ? (isOccupiedCity ? 1 : (isMajorCity(city.id) ? 5 : 1)) : 0;
-    let queueH = cityQueue.length > 0 ? 22 + cityQueue.length * 20 : 0;
+    let queueH = cityQueue.length > 0 ? 34 + cityQueue.length * 26 : 0;
     let upgradeH = 0;
     if (isOwn && !isMajorCity(city.id)) {
         let upgrading = G.buildQueue && G.buildQueue.some(bq => bq.type === 'upgrade_city' && bq.cityId === city.id);
-        upgradeH = upgrading ? 39 : 30;
+        upgradeH = upgrading ? 54 : 40;
     }
-    let baseH = isOwn ? 148 + typeCount * 26 + queueH + upgradeH : 150;
+    // 粮食区块高度
+    let grainH = 0;
+    if (isOwn) {
+        grainH = 80;
+        if (!isMajorCity(city.id) && cityData && cityData.cityType === 'small' && !cityData.grainUpgraded) grainH += 38;
+    }
+    let baseH = isOwn ? 180 + typeCount * 34 + queueH + upgradeH + grainH : 170;
     let h = baseH;
 
     ctx.save();
@@ -1126,40 +1265,34 @@ function drawCityPanel() {
 
     // 城市名称 + 归属国
     ctx.fillStyle = "#c8a830";
-    ctx.font = "bold 14px Georgia,serif";
+    ctx.font = "bold 18px Georgia,serif";
     ctx.textAlign = "left"; ctx.textBaseline = "top";
-    ctx.fillText("🏰 " + city.name, x + 12, y + 6);
+    ctx.fillText("🏰 " + city.name, x + 14, y + 10);
     ctx.fillStyle = CT.textM;
-    ctx.font = "12px Georgia,serif";
-    ctx.fillText(liveOwner ? (COUNTRY_CN[liveOwner] || liveOwner) : "⚖️ 中立", x + 12, y + 24);
+    ctx.font = "14px Georgia,serif";
+    ctx.fillText(liveOwner ? (COUNTRY_CN[liveOwner] || liveOwner) : "⚖️ 中立", x + 14, y + 32);
 
     // 城市血量
     let hpText = "❤️ 血量: " + Math.floor(cityHp) + "/" + Math.floor(cityMaxHp);
-    if (cityHp < cityMaxHp) {
-        let hpRatio = cityHp / cityMaxHp;
-        let hpColor = hpRatio > 0.6 ? CT.success : hpRatio > 0.3 ? CT.warning : CT.danger;
-        ctx.fillStyle = hpColor;
-    } else {
-        ctx.fillStyle = CT.textM;
-    }
-    ctx.font = "12px Georgia,serif";
-    ctx.fillText(hpText, x + 12, y + 42);
+    let hpRatio = Math.max(0, cityHp / cityMaxHp);
+    let hpColor = hpRatio > 0.6 ? CT.success : hpRatio > 0.3 ? CT.warning : CT.danger;
+    ctx.fillStyle = hpColor;
+    ctx.font = "14px Georgia,serif";
+    ctx.fillText(hpText, x + 14, y + 56);
 
     // 血量条
-    let hpBarW = w - 24;
-    let hpBarX = x + 12;
-    let hpBarY = y + 56;
-    let hpRatio = Math.max(0, cityHp / cityMaxHp);
-    let hpColor = cityHp > cityMaxHp * 0.6 ? CT.success : cityHp > cityMaxHp * 0.3 ? CT.warning : CT.danger;
-    CT.drawProgressBar(ctx, hpBarX, hpBarY, hpBarW, 4, hpRatio, hpColor);
+    let hpBarW = w - 28;
+    let hpBarX = x + 14;
+    let hpBarY = y + 78;
+    CT.drawProgressBar(ctx, hpBarX, hpBarY, hpBarW, 6, hpRatio, hpColor);
 
     // 城市攻击冷却条
-    let cityCdY = y + 63;
+    let cityCdY = y + 90;
     if (cityData) {
         let cd = cityData.fireCooldown || 0;
         if (cd > 0) {
             let progress = 1 - (cd / (cityData.maxFireCd || 1));
-            CT.drawProgressBar(ctx, x + 12, cityCdY, w - 24, 3, progress, "rgba(40,140,255,0.9)");
+            CT.drawProgressBar(ctx, x + 14, cityCdY, w - 28, 4, progress, "rgba(40,140,255,0.9)");
         }
         // 显示城市射程/伤害
         let isCap = city.isCapital || false;
@@ -1167,55 +1300,55 @@ function drawCityPanel() {
         let cityRange = (isCap || isMaj) ? 0.30 : 0.24;
         let cityDmg = (isCap || isMaj) ? 50 : 30;
         ctx.fillStyle = "rgba(255,150,100,0.6)";
-        ctx.font = "11px Georgia,serif";
-        ctx.fillText("⚔ " + (isCap || isMaj ? "大" : "小") + "城 伤害:" + cityDmg + " 射程:" + cityRange, x + 12, cityCdY + (cd > 0 ? 5 : 2));
+        ctx.font = "12px Georgia,serif";
+        ctx.fillText("⚔ " + (isCap || isMaj ? "大" : "小") + "城 伤害:" + cityDmg + " 射程:" + cityRange, x + 14, cityCdY + (cd > 0 ? 8 : 4));
     }
 
     // 工厂数（仅本国显示）
     if (isOwn) {
         ctx.fillStyle = CT.textM;
-        ctx.font = "12px Georgia,serif";
-        ctx.fillText("🏭 工厂: " + cityFactories, x + 12, y + 76);
+        ctx.font = "14px Georgia,serif";
+        ctx.fillText("🏭 工厂: " + cityFactories, x + 14, y + 104);
         if (city.isCapital || isMajorCity(city.id)) {
             ctx.fillStyle = "rgba(100,200,255,0.6)";
-            ctx.fillText("🏛️ 外交 +1.5/年", x + 12, y + 90);
+            ctx.fillText("🏛️ 外交 +1.5/年", x + 14, y + 124);
         }
     }
 
-    let ly = isOwn ? y + 100 : y + 76;
+    let ly = isOwn ? y + 130 : y + 94;
     if (!isOwn) {
         // 外国城市：显示驻军信息
         ly += 6;
         let garrisoned = G.divisions.filter(d => d.garrisonCityId === city.id && d.country === G.playerCountry);
         if (garrisoned.length > 0) {
-            CT.drawSeparator(ctx, x + 10, ly, w - 20);
-            ly += 6;
+            CT.drawSeparator(ctx, x + 12, ly, w - 24);
+            ly += 8;
             ctx.fillStyle = CT.info;
-            ctx.font = "bold 10px Georgia,serif";
+            ctx.font = "bold 13px Georgia,serif";
             ctx.textAlign = "left";
-            ctx.fillText("🛡️ 驻军: " + garrisoned.length + " 单位", x + 12, ly + 2);
-            ly += 20;
+            ctx.fillText("🛡️ 驻军: " + garrisoned.length + " 单位", x + 14, ly + 2);
+            ly += 26;
         }
         // 显示敌对关系
         if (G.playerCountry && areAtWar(G.playerCountry, liveOwner)) {
             ctx.fillStyle = "#d44";
-            ctx.font = "10px Georgia,serif";
+            ctx.font = "13px Georgia,serif";
             ctx.textAlign = "center";
             ctx.fillText("⚔️ 交战中", x + w/2, ly);
-            ly += 18;
+            ly += 24;
         } else if (G.playerCountry && isSameFaction(G.playerCountry, liveOwner)) {
             ctx.fillStyle = "rgba(100,200,150,0.8)";
-            ctx.font = "10px Georgia,serif";
+            ctx.font = "13px Georgia,serif";
             ctx.textAlign = "center";
             ctx.fillText("🤝 同盟", x + w/2, ly);
-            ly += 18;
+            ly += 24;
         }
         if (!liveOwner && cityHp <= 0) {
             ctx.fillStyle = "#8ad4a4";
-            ctx.font = "bold 10px Georgia,serif";
+            ctx.font = "bold 13px Georgia,serif";
             ctx.textAlign = "center";
             ctx.fillText("⚖️ 中立 — 部队靠近即可占领", x + w/2, ly + 2);
-            ly += 18;
+            ly += 24;
         }
         ctx.restore();
         return;
@@ -1245,29 +1378,79 @@ function drawCityPanel() {
             // 显示升级进度条
             let progress = upgradeItem.totalDays > 0 ? Math.max(0, 1 - upgradeItem.days / upgradeItem.totalDays) : 0;
             let remaining = Math.ceil(upgradeItem.days);
-            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 27, "", { style: "default", radius: 2 });
+            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 30, "", { style: "default", radius: 2 });
             ctx.fillStyle = "#c8a830";
-            ctx.font = "10px Georgia,serif";
+            ctx.font = "12px Georgia,serif";
             ctx.textAlign = "left"; ctx.textBaseline = "middle";
-            ctx.fillText("⬆️ 升级大城市 " + Math.floor(progress * 100) + "% (" + remaining + "天)", x + 14, ly + 8);
+            ctx.fillText("⬆️ 升级大城市 " + Math.floor(progress * 100) + "% (" + remaining + "天)", x + 14, ly + 10);
             // 进度条
             let barW2 = w - 36;
-            CT.drawProgressBar(ctx, x + 14, ly + 18, barW2, 4, progress, CT.warning);
-            ly += 31;
+            CT.drawProgressBar(ctx, x + 14, ly + 20, barW2, 4, progress, CT.warning);
+            ly += 35;
             // 分隔线
             CT.drawSeparator(ctx, x + 10, ly, w - 20);
             ly += 8;
         } else {
             let canUpgrade = treasury >= 150;
-            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
-            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 22, "⬆️ 升级为大城市 ($150)", {
+            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, "⬆️ 升级为大城市 ($150)", {
                 hovered: hovered && canUpgrade,
                 style: canUpgrade ? "highlight" : "default",
-                font: "10px Georgia,serif"
+                font: "12px Georgia,serif"
             });
-            window._cityBtns.push({ id: 'upgrade_city', x: x + 8, y: ly, w: w - 16, h: 22, enabled: canUpgrade });
-            ly += 26;
+            window._cityBtns.push({ id: 'upgrade_city', x: x + 8, y: ly, w: w - 16, h: 26, enabled: canUpgrade });
+            ly += 30;
             // 分隔线
+            CT.drawSeparator(ctx, x + 10, ly, w - 20);
+            ly += 8;
+        }
+    }
+
+    // ===== 粮食区块（己方城市：库存/月产/补给覆盖 + 小城市升级） =====
+    if (isOwn) {
+        CT.drawSeparator(ctx, x + 10, ly, w - 20);
+        ly += 8;
+        ctx.fillStyle = "#c8a840";
+        ctx.font = "bold 13px Georgia,serif";
+        ctx.textAlign = "center";
+        ctx.fillText("— 粮食 —", x + w / 2, ly);
+        ly += 18;
+        ctx.textAlign = "left";
+        ctx.font = "12px Georgia,serif";
+        let gpm = cityData.grainPerMonth !== undefined ? cityData.grainPerMonth : 15;
+        let gmax = cityData.grainMax !== undefined ? cityData.grainMax : 150;
+        let upgTxt = cityData.grainUpgraded ? " ✅" : (cityData.grainUpgradeProgress > 0 ? " → 30（升级中）" : "");
+        ctx.fillStyle = "#d4b860";
+        ctx.fillText("🌾 粮食: " + Math.floor(cityData.grain || 0) + " / " + gmax, x + 12, ly);
+        ctx.fillStyle = "#a8d868";
+        ctx.fillText("月产: " + gpm + upgTxt, x + 12, ly + 18);
+        ctx.fillStyle = "rgba(200,180,150,0.7)";
+        ctx.fillText("补给覆盖: " + (cityData.suppliedDivs || 0) + " 个师", x + 12, ly + 36);
+        ly += 48;
+
+        // 小城市粮食升级（限1次：未升级→按钮 / 升级中→进度 / 已升级→文字）
+        if (!isMajorCity(city.id) && !city.isCapital && cityData.cityType === 'small') {
+            if (cityData.grainUpgraded) {
+                ctx.fillStyle = "#a8d868";
+                ctx.fillText("已升级 ✅（月产 30）", x + 12, ly);
+                ly += 20;
+            } else if (cityData.grainUpgradeProgress > 0) {
+                let remain = Math.ceil(cityData.grainUpgradeProgress);
+                let pct = 1 - cityData.grainUpgradeProgress / ((typeof GRAIN_UPGRADE_DAYS !== 'undefined') ? GRAIN_UPGRADE_DAYS : 30);
+                CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, "提升粮食产量（升级中 " + remain + " 天）", { style: "default", font: "12px Georgia,serif" });
+                CT.drawProgressBar(ctx, x + 14, ly + 20, w - 36, 4, pct, CT.warning);
+                ly += 30;
+            } else {
+                let canUpg = treasury >= ((typeof GRAIN_UPGRADE_COST !== 'undefined') ? GRAIN_UPGRADE_COST : 100);
+                let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+                CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, "提升粮食产量 ($" + ((typeof GRAIN_UPGRADE_COST !== 'undefined') ? GRAIN_UPGRADE_COST : 100) + " · " + ((typeof GRAIN_UPGRADE_DAYS !== 'undefined') ? GRAIN_UPGRADE_DAYS : 30) + "天)", {
+                    hovered: hovered && canUpg,
+                    style: canUpg ? "highlight" : "default",
+                    font: "12px Georgia,serif"
+                });
+                window._cityBtns.push({ id: 'upgrade_grain', x: x + 8, y: ly, w: w - 16, h: 26, enabled: canUpg });
+                ly += 30;
+            }
             CT.drawSeparator(ctx, x + 10, ly, w - 20);
             ly += 8;
         }
@@ -1275,10 +1458,10 @@ function drawCityPanel() {
 
     // 生产选项
     ctx.fillStyle = CT.info;
-    ctx.font = "bold 11px Georgia,serif";
+    ctx.font = "bold 13px Georgia,serif";
     ctx.textAlign = "center";
     ctx.fillText("— 生产 —", x + w/2, ly);
-    ly += 18;
+    ly += 20;
 
     let types = [];
     let isOccupied = cityData && cityData.occupierFlag;
@@ -1288,9 +1471,11 @@ function drawCityPanel() {
     } else if (isMajorCity(city.id)) {
         types.push({id:'build_factory', label:'🏗️ 建工厂', cost:50, color:'#6a8a4a', desc: '当前' + cityFactories + '座'});
         types.push({id:'infantry', label:'⚔️ 步兵', cost:50, color:'#7a9a5a', manpower:15});
+        types.push({id:'mountain', label:'⛰️ 山地师', cost:85, color:'#8a7a6a', manpower:13});
         types.push({id:'engineer', label:'⚙️ 工兵', cost:70, color:'#4a7a8a', manpower:12});
         types.push({id:'cavalry',  label:'🏇 骑兵', cost:80, color:'#8a7a4a', manpower:10});
         types.push({id:'artillery',label:'💥 炮兵', cost:120, color:'#8a4a5a', manpower:8});
+        types.push({id:'airplane', label:'✈️ 空军', cost:200, color:'#5a8aaa', manpower:3});
     } else {
         // 小城市只能生产步兵
         types.push({id:'infantry', label:'⚔️ 步兵', cost:50, color:'#7a9a5a', manpower:15});
@@ -1298,26 +1483,27 @@ function drawCityPanel() {
 
     for (let t of types) {
         let can = treasury >= t.cost && (manpower === undefined || manpower >= (t.manpower || 0));
-        let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
+        let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 26 && mouseX > x + 8 && mouseX < x + w - 8;
         let style = 'default';
         if (t.id === 'build_factory') style = 'success';
         else if (t.id === 'infantry') style = 'success';
         else if (t.id === 'engineer') style = 'info';
         else if (t.id === 'cavalry') style = 'highlight';
         else if (t.id === 'artillery') style = 'danger';
-        CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 22, t.label + " ($" + t.cost + ")", {
+        else if (t.id === 'mountain') style = 'info';
+        CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, t.label + " ($" + t.cost + ")", {
             hovered: hovered && can,
             style: can ? style : "default",
-            font: "11px Georgia,serif"
+            font: "12px Georgia,serif"
         });
         if (t.desc) {
             ctx.fillStyle = can ? CT.textM : CT.textD;
-            ctx.font = "9px Georgia,serif";
+            ctx.font = "10px Georgia,serif";
             ctx.textAlign = "right";
-            ctx.fillText(t.desc, x + w - 14, ly + 11);
+            ctx.fillText(t.desc, x + w - 14, ly + 13);
         }
-        window._cityBtns.push({ id: t.id, x: x + 8, y: ly, w: w - 16, h: 22, enabled: can });
-        ly += 26;
+        window._cityBtns.push({ id: t.id, x: x + 8, y: ly, w: w - 16, h: 26, enabled: can });
+        ly += 30;
     }
 
     // 建造队列（显示在生产按钮下方）
@@ -1325,10 +1511,10 @@ function drawCityPanel() {
         CT.drawSeparator(ctx, x + 10, ly, w - 20);
         ly += 6;
         ctx.fillStyle = "#4a8ad4";
-        ctx.font = "bold 10px Georgia,serif";
+        ctx.font = "bold 12px Georgia,serif";
         ctx.textAlign = "left";
         ctx.fillText("📋 建造队列:", x + 12, ly + 2);
-        ly += 16;
+        ly += 18;
         for (let bq of cityQueue) {
             let progress = bq.totalDays > 0 ? Math.round((1 - bq.days / bq.totalDays) * 100) : 0;
             let label = bq.type === 'factory' ? '🏗️ 工厂' : (UNIT_TYPES[bq.unitType] ? '[' + UNIT_TYPES[bq.unitType].label + ']' : '单位');
@@ -1336,25 +1522,25 @@ function drawCityPanel() {
             // 置顶按钮（最左侧，仅当非第一项时显示）
             let isFirst = (cityQueue.indexOf(bq) === 0);
             let pinX = x + 10;
-            let pinHovered = !isFirst && mouseY !== undefined && mouseY > ly && mouseY < ly + 18 && mouseX > pinX - 2 && mouseX < pinX + 16;
+            let pinHovered = !isFirst && mouseY !== undefined && mouseY > ly && mouseY < ly + 20 && mouseX > pinX - 2 && mouseX < pinX + 16;
             let pinColor = pinHovered ? CT.brass : CT.textD;
             if (!isFirst) {
                 ctx.fillStyle = pinHovered ? "rgba(255,215,0,0.2)" : "rgba(180,140,80,0.05)";
-                ctx.fillRect(pinX - 2, ly, 16, 18);
+                ctx.fillRect(pinX - 2, ly, 16, 20);
                 ctx.fillStyle = pinColor;
-                ctx.font = "11px Georgia,serif";
+                ctx.font = "12px Georgia,serif";
                 ctx.textAlign = "center";
-                ctx.fillText("▴", pinX + 6, ly + 6);
-                window._cityPinBtns.push({ cityId: city.id, bqIndex: cityQueue.indexOf(bq), x: pinX - 2, y: ly, w: 16, h: 18 });
+                ctx.fillText("▴", pinX + 6, ly + 8);
+                window._cityPinBtns.push({ cityId: city.id, bqIndex: cityQueue.indexOf(bq), x: pinX - 2, y: ly, w: 16, h: 20 });
             }
             ctx.fillStyle = CT.textM;
-            ctx.font = "10px Georgia,serif";
+            ctx.font = "11px Georgia,serif";
             ctx.textAlign = "left";
             ctx.fillText(label + " " + progress + "% (" + remaining + "天)", x + 28, ly + 2);
             // 迷你进度条
             let barW2 = w - 52;
-            CT.drawProgressBar(ctx, x + 28, ly + 12, barW2, 3, progress / 100, "#4a8ad4");
-            ly += 20;
+            CT.drawProgressBar(ctx, x + 28, ly + 13, barW2, 3, progress / 100, "#4a8ad4");
+            ly += 22;
         }
     }
 
@@ -1567,134 +1753,121 @@ function drawMultiCityPanel() {
     if (G.buildQueue) cityQueue = G.buildQueue.filter(bq => cityIds[bq.cityId]);
 
     let majOcc = majCities.some(c => c.occupierFlag);
-    let majBtns = majOcc ? ['infantry'] : ['build_factory','infantry','engineer','cavalry','artillery'];
+    let majBtns = majOcc ? ['infantry'] : ['build_factory','infantry','mountain','engineer','cavalry','artillery','airplane'];
     let minBtns = ['infantry'];
 
-    let h = 48;
-    if (majCities.length > 0) h += 26 + 26 * majBtns.length;
-    if (minCities.length > 0) h += 26 + 26 * minBtns.length;
-    if (cityQueue.length > 0) h += 24 + cityQueue.length * 20;
+    let h = 70;
+    if (majCities.length > 0) h += 34 + 34 * majBtns.length;
+    if (minCities.length > 0) h += 34 + 34 * minBtns.length;
+    if (cityQueue.length > 0) h += 30 + cityQueue.length * 24;
 
-    let x = canvas.width - 240;
+    let x = canvas.width - 520;
     let y = TOP_BAR_HEIGHT + 10;
-    let w = 230;
+    let w = 500;
 
     ctx.save();
-    ctx.fillStyle = "rgba(22,16,10,0.95)";
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = "rgba(180,140,80,0.15)";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(x, y, w, h);
-    ctx.fillStyle = "#c8a830";
-    ctx.fillRect(x, y, 3, h);
+    let accentColor = "#c8a830";
+    CT.drawPanel(ctx, x, y, w, h, { accentColor: accentColor });
     window._multiCityRect = { x: x, y: y, w: w, h: h };
     if (!window._multiCityBtns) window._multiCityBtns = [];
     window._multiCityBtns = [];
 
     ctx.fillStyle = "#c8a830";
-    ctx.font = "bold 13px sans-serif";
+    ctx.font = "bold 18px Georgia,serif";
     ctx.textAlign = "left"; ctx.textBaseline = "top";
-    ctx.fillText("🏰 已选 " + cities.length + " 座城市", x + 12, y + 6);
-    ctx.fillStyle = "rgba(200,180,150,0.5)";
-    ctx.font = "11px sans-serif";
+    ctx.fillText("🏰 已选 " + cities.length + " 座城市", x + 14, y + 10);
+    ctx.fillStyle = "rgba(200,180,150,0.55)";
+    ctx.font = "14px Georgia,serif";
     if (cities.length <= 3) {
-        ctx.fillText(cities.map(c => c.name).join(" · "), x + 12, y + 24);
+        ctx.fillText(cities.map(c => c.name).join(" · "), x + 14, y + 32);
     } else {
-        ctx.fillText("大城市 " + majCities.length + " 座 · 小城市 " + minCities.length + " 座", x + 12, y + 24);
+        ctx.fillText("大城市 " + majCities.length + " 座 · 小城市 " + minCities.length + " 座", x + 14, y + 32);
     }
-    let ly = y + 44;
+    let ly = y + 58;
 
     let typeDefs = {
         'build_factory': { label: '🏗️ 建工厂', cost: 50, manpower: 0, color: '#6a8a4a' },
         'infantry': { label: '⚔️ 步兵', cost: 50, manpower: 15, color: '#7a9a5a' },
+        'mountain': { label: '⛰️ 山地师', cost: 85, manpower: 13, color: '#8a7a6a' },
         'engineer': { label: '⚙️ 工兵', cost: 70, manpower: 12, color: '#4a7a8a' },
         'cavalry': { label: '🏇 骑兵', cost: 80, manpower: 10, color: '#8a7a4a' },
         'artillery': { label: '💥 炮兵', cost: 120, manpower: 8, color: '#8a4a5a' },
+        'airplane': { label: '✈️ 空军', cost: 200, manpower: 3, color: '#5a8aaa' },
     };
 
     // 大城市组
     if (majCities.length > 0) {
+        CT.drawSeparator(ctx, x + 12, ly, w - 24);
+        ly += 8;
         ctx.fillStyle = "#6a8aaa";
-        ctx.font = "bold 11px sans-serif";
+        ctx.font = "bold 14px Georgia,serif";
         ctx.textAlign = "center";
         ctx.fillText("— 大城市 ×" + majCities.length + " —", x + w/2, ly);
-        ly += 18;
+        ly += 24;
         for (let tid of majBtns) {
             let td = typeDefs[tid];
             let n = majCities.length;
             let total = td.cost * n;
             let needMp = td.manpower * n;
             let can = treasury >= total && (needMp === 0 || manpower >= needMp);
-            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
-            ctx.fillStyle = hovered && can ? td.color + "cc" : can ? td.color + "88" : "rgba(128,128,128,0.2)";
-            ctx.fillRect(x + 8, ly, w - 16, 22);
-            ctx.strokeStyle = hovered && can ? "rgba(200,180,150,0.3)" : "rgba(180,140,80,0.08)";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x + 8, ly, w - 16, 22);
-            ctx.fillStyle = can ? "#fff" : "rgba(200,180,150,0.3)";
-            ctx.font = "11px sans-serif";
-            ctx.textAlign = "left"; ctx.textBaseline = "middle";
-            ctx.fillText(td.label + " ×" + n + " ($" + total + ")", x + 14, ly + 11);
-            window._multiCityBtns.push({ id: tid, cities: majCities, x: x + 8, y: ly, w: w - 16, h: 22, enabled: can });
-            ly += 26;
+            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 30 && mouseX > x + 10 && mouseX < x + w - 10;
+            CT.drawRoundedBtn(ctx, x + 10, ly, w - 20, 30, td.label + " ×" + n + " ($" + total + ")", {
+                hovered: hovered && can,
+                style: can ? "default" : "disabled",
+                font: "13px Georgia,serif"
+            });
+            window._multiCityBtns.push({ id: tid, cities: majCities, x: x + 10, y: ly, w: w - 20, h: 30, enabled: can });
+            ly += 34;
         }
     }
 
     // 小城市组
     if (minCities.length > 0) {
         ly += 2;
-        ctx.fillStyle = "rgba(180,140,80,0.08)";
-        ctx.fillRect(x + 10, ly - 6, w - 20, 1);
-        ctx.fillStyle = "#6a8aaa";
-        ctx.font = "bold 11px sans-serif";
+        CT.drawSeparator(ctx, x + 12, ly, w - 24);
+        ly += 8;
+        ctx.fillStyle = "#8a7a6a";
+        ctx.font = "bold 14px Georgia,serif";
         ctx.textAlign = "center";
         ctx.fillText("— 小城市 ×" + minCities.length + " —", x + w/2, ly);
-        ly += 18;
+        ly += 24;
         for (let tid of minBtns) {
             let td = typeDefs[tid];
             let n = minCities.length;
             let total = td.cost * n;
             let needMp = td.manpower * n;
             let can = treasury >= total && (needMp === 0 || manpower >= needMp);
-            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
-            ctx.fillStyle = hovered && can ? td.color + "cc" : can ? td.color + "88" : "rgba(128,128,128,0.2)";
-            ctx.fillRect(x + 8, ly, w - 16, 22);
-            ctx.strokeStyle = hovered && can ? "rgba(200,180,150,0.3)" : "rgba(180,140,80,0.08)";
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x + 8, ly, w - 16, 22);
-            ctx.fillStyle = can ? "#fff" : "rgba(200,180,150,0.3)";
-            ctx.font = "11px sans-serif";
-            ctx.textAlign = "left"; ctx.textBaseline = "middle";
-            ctx.fillText(td.label + " ×" + n + " ($" + total + ")", x + 14, ly + 11);
-            window._multiCityBtns.push({ id: tid, cities: minCities, x: x + 8, y: ly, w: w - 16, h: 22, enabled: can });
-            ly += 26;
+            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 30 && mouseX > x + 10 && mouseX < x + w - 10;
+            CT.drawRoundedBtn(ctx, x + 10, ly, w - 20, 30, td.label + " ×" + n + " ($" + total + ")", {
+                hovered: hovered && can,
+                style: can ? "default" : "disabled",
+                font: "13px Georgia,serif"
+            });
+            window._multiCityBtns.push({ id: tid, cities: minCities, x: x + 10, y: ly, w: w - 20, h: 30, enabled: can });
+            ly += 34;
         }
     }
 
     // 建造队列汇总
     if (cityQueue.length > 0) {
         ly += 2;
-        ctx.fillStyle = "rgba(180,140,80,0.08)";
-        ctx.fillRect(x + 10, ly - 4, w - 20, 1);
-        ly += 6;
+        CT.drawSeparator(ctx, x + 12, ly, w - 24);
+        ly += 8;
         ctx.fillStyle = "#4a8ad4";
-        ctx.font = "bold 10px sans-serif";
+        ctx.font = "bold 14px Georgia,serif";
         ctx.textAlign = "left";
-        ctx.fillText("📋 建造队列:", x + 12, ly + 2);
-        ly += 16;
+        ctx.fillText("📋 建造队列:", x + 14, ly + 2);
+        ly += 22;
         for (let bq of cityQueue) {
             let progress = bq.totalDays > 0 ? Math.round((1 - bq.days / bq.totalDays) * 100) : 0;
             let label = bq.type === 'factory' ? '🏗️ 工厂' : (UNIT_TYPES[bq.unitType] ? '[' + UNIT_TYPES[bq.unitType].label + ']' : '单位');
             let remaining = Math.ceil(bq.days);
-            ctx.fillStyle = "rgba(200,180,150,0.4)";
-            ctx.font = "10px sans-serif";
-            ctx.fillText(label + " " + progress + "% (" + remaining + "天)", x + 12, ly + 2);
-            let barW2 = w - 24;
-            ctx.fillStyle = "rgba(180,140,80,0.1)";
-            ctx.fillRect(x + 12, ly + 12, barW2, 3);
-            ctx.fillStyle = "#4a8ad4";
-            ctx.fillRect(x + 12, ly + 12, barW2 * (progress / 100), 3);
-            ly += 20;
+            ctx.fillStyle = "rgba(200,180,150,0.5)";
+            ctx.font = "13px Georgia,serif";
+            ctx.fillText(label + " " + progress + "% (" + remaining + "天)", x + 14, ly + 2);
+            let barW2 = w - 28;
+            CT.drawProgressBar(ctx, x + 14, ly + 14, barW2, 4, progress / 100, "#4a8ad4");
+            ly += 24;
         }
     }
 
@@ -1935,7 +2108,7 @@ function drawCountrySidebar() {
                 for (let ef of fx) {
                     let statCN = ef.stat === 'atk' ? "攻击" : ef.stat === 'hp' ? "血量" : ef.stat === 'spd' ? "移速" : "后勤";
                     let v = ef.value || 0;
-                    let sign = v < 0 ? '-' : (ef.stat === 'logi' ? '-' : '+');
+                    let sign = v < 0 ? '-' : '+';
                     parts.push(statCN + sign + Math.round(Math.abs(v) * 100) + "%");
                 }
                 auraTxt = "光环:" + parts.join("/");
@@ -2896,13 +3069,15 @@ function drawSelectedUnitSidebar() {
     // 指挥系统：本国陆军可编入集团军（1个师即可编成新集团军，可编成空集团军）
     let landSel = selDivs.filter(d => typeof isSeaType === 'function' && !isSeaType(d.type));
     let canFormGroup = landSel.length >= 1;
+    // 铁路运兵候选（陆战单位，空军不可乘车）
+    let railSel = landSel.filter(d => d.type !== 'airplane');
 
-    let x = canvas.width - 310;
+    let x = canvas.width - 520;
     let y = TOP_BAR_HEIGHT + 10;
-    let w = 300;
-    let detailH = selDivs.length === 1 ? 220 : 0;
-    let extraH = (hasNavyFormation ? 90 : 0) + (hasSub ? 30 : 0) + detailH + (canFormGroup ? 30 : 0);
-    let h = Math.min(selDivs.length, 8) * 25 + 60 + extraH;
+    let w = 500;
+    let detailH = selDivs.length === 1 ? 460 : 0;
+    let extraH = (hasNavyFormation ? 100 : 0) + (hasSub ? 34 : 0) + detailH + (canFormGroup ? 34 : 0) + (railSel.length > 0 ? 34 : 0);
+    let h = Math.min(selDivs.length, 8) * 28 + 68 + extraH;
 
     ctx.save();
     CT.drawPanel(ctx, x, y, w, h, { accentColor: COUNTRY_COLORS[G.playerCountry] || "#888" });
@@ -2912,12 +3087,12 @@ function drawSelectedUnitSidebar() {
     window._sidePanelRect = { x: x, y: y, w: w, h: h };
 
     ctx.fillStyle = "#e8d8b0";
-    ctx.font = "bold 13px Georgia,serif";
+    ctx.font = "bold 15px Georgia,serif";
     ctx.textAlign = "left"; ctx.textBaseline = "top";
-    ctx.fillText("已选 " + selDivs.length + " 单位", x + 12, y + 6);
+    ctx.fillText("已选 " + selDivs.length + " 单位", x + 14, y + 8);
 
-    let ly = y + 28;
-    let rowH = 25;
+    let ly = y + 32;
+    let rowH = 28;
     let maxRows = 8;
     let visCount = Math.min(selDivs.length, maxRows);
     let listH = visCount * rowH;
@@ -2939,7 +3114,7 @@ function drawSelectedUnitSidebar() {
         } else {
             ctx.fillStyle = d.focusTarget ? "#b05040" : "rgba(200,180,150,0.6)";
         }
-        ctx.font = "12px Georgia,serif";
+        ctx.font = "13px Georgia,serif";
         let shield = (G.patrolTargets[d.id] && G.patrolTargets[d.id].length > 0) ? "🛡️" : "";
         let txt;
         if (shipInfo) {
@@ -2973,7 +3148,7 @@ function drawSelectedUnitSidebar() {
     ly = y + 28 + listH;
     if (selDivs.length > maxRows) {
         ctx.fillStyle = "rgba(200,180,150,0.45)";
-        ctx.font = "10px Georgia,serif";
+        ctx.font = "11px Georgia,serif";
         ctx.textAlign = "right";
         ctx.fillText("共 " + selDivs.length + " 个（滚轮查看）", x + w - 22, ly - 12);
         ctx.textAlign = "left";
@@ -2983,12 +3158,16 @@ function drawSelectedUnitSidebar() {
     if (selDivs.length === 1) {
         let d = selDivs[0];
         let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
+        // 缺粮（断粮）状态：全属性 -40%
+        let starvePen = d.supplyStatus === 'starve';
+        let sMult = starvePen ? 0.6 : 1;
         // 海军舰船：使用计算后的属性（含品级加成）
-        let range = d.navyRng !== undefined ? d.navyRng : ut.range;
-        let speed = d.navySpd !== undefined ? d.navySpd : ut.speed;
-        let dmg = d.navyDmg !== undefined ? d.navyDmg : ut.damage;
-        let fr = d.navyFr !== undefined ? d.navyFr : ut.fireRate;
-        let maxHp = d.maxStrength !== undefined ? d.maxStrength : ut.maxStr;
+        let range = (d.navyRng !== undefined ? d.navyRng : ut.range) * sMult;
+        let speed = (d.navySpd !== undefined ? d.navySpd : ut.speed) * sMult;
+        let dmg = (d.navyDmg !== undefined ? d.navyDmg : ut.damage) * sMult;
+        let fr = (d.navyFr !== undefined ? d.navyFr : ut.fireRate) / sMult;
+        let realMaxHp = d.maxStrength !== undefined ? d.maxStrength : ut.maxStr;
+        let maxHp = Math.round(realMaxHp * sMult);
 
         let subNote = "";
         let speedNote = "";
@@ -2996,25 +3175,28 @@ function drawSelectedUnitSidebar() {
             if (d.submerged) { subNote = "水下"; speedNote = "（水下）"; }
             else if (d.diving) { subNote = "下潜中"; speedNote = "（水下）"; }
             else if (d.surfacing) { subNote = "上浮中"; }
-            // 下潜/已下潜时移速减半
             if (d.submerged || d.diving) speed *= 0.5;
         }
+
+        let LINE_H = 24; // 行高，14px字体充裕间距
 
         ly += 4;
         CT.drawSeparator(ctx, x + 10, ly, w - 20);
         ly += 10;
         ctx.fillStyle = "#e8d8b0";
-        ctx.font = "bold 13px Georgia,serif";
+        ctx.font = "bold 15px Georgia,serif";
         ctx.textAlign = "center";
         ctx.fillText("— " + ut.label + " 详情 —", x + w / 2, ly);
-        ly += 18;
+        ly += 24;
 
-        // 指挥系统：集团军指挥官/总司令光环加成（联机模式返回0）
+        // 指挥系统：集团军指挥官/总司令光环加成
         let bonuses = (typeof getDivisionBonuses === 'function') ? getDivisionBonuses(d) : null;
         let hasBonus = bonuses && (bonuses.atk > 0 || bonuses.hp > 0 || bonuses.spd > 0 || bonuses.logi > 0);
 
-        ctx.font = "12px Georgia,serif";
+        ctx.font = "14px Georgia,serif";
         ctx.textAlign = "left";
+
+        // 伤害
         ctx.fillStyle = "#b05040";
         ctx.fillText("⚔️ 伤害: " + (Math.round(dmg * 10) / 10), x + 12, ly);
         if (bonuses && bonuses.atk > 0) {
@@ -3022,61 +3204,161 @@ function drawSelectedUnitSidebar() {
             ctx.fillStyle = "#a0d860";
             ctx.fillText("+" + (Math.round(dmg * bonuses.atk * 10) / 10), x + 12 + baseW + 4, ly);
         }
+        ly += LINE_H;
+
+        // 射速
         ctx.fillStyle = "#6a8aaa";
-        ctx.fillText("🔫 射速: " + (Math.round(fr * 10) / 10) + " 天/发", x + 12, ly + 18);
-        ctx.fillStyle = "#7a9a5a";
-        ctx.fillText("❤️ 生命: " + Math.floor(maxHp), x + 12, ly + 36);
-        if (bonuses && bonuses.hp > 0) {
-            let baseW2 = ctx.measureText("❤️ 生命: " + Math.floor(maxHp)).width;
+        ctx.fillText("🔫 射速: " + (Math.round(fr * 10) / 10) + " 天/发", x + 12, ly);
+        ly += LINE_H;
+
+        // 血量（文字 + 进度条）
+        let hpRatio = Math.max(0, d.strength / realMaxHp);
+        let hpColor = hpRatio > 0.6 ? "#7a9a5a" : hpRatio > 0.3 ? "#c8a830" : "#b05040";
+        // 血量（指挥官血量加成直接并入上限显示；无加成时不显示绿色）
+        let hpBonusShow = (bonuses && bonuses.hp > 0) ? bonuses.hp : 0;
+        let maxHpShow = Math.round(maxHp * (1 + hpBonusShow));
+        ctx.fillStyle = hpBonusShow > 0 ? "#a0d860" : hpColor;
+        ctx.fillText("❤️ 血量: " + Math.floor(d.strength) + "/" + Math.floor(maxHpShow), x + 12, ly);
+        ly += 16;
+        // HP 进度条
+        let hpBarW = w - 24;
+        let hpBarH = 6;
+        let hpBarX = x + 12;
+        ctx.fillStyle = "rgba(0,0,0,0.5)";
+        ctx.fillRect(hpBarX, ly, hpBarW, hpBarH);
+        ctx.fillStyle = hpColor;
+        ctx.fillRect(hpBarX, ly, hpBarW * hpRatio, hpBarH);
+        ctx.strokeStyle = "rgba(255,255,255,0.2)";
+        ctx.lineWidth = 0.5;
+        ctx.strokeRect(hpBarX, ly, hpBarW, hpBarH);
+        // 血条右侧提示：口粮充足(≥25) 恢复 +3/天；口粮耗尽扣血 -5/天
+        if ((d.rations || 0) >= 25) {
             ctx.fillStyle = "#a0d860";
-            ctx.fillText("+" + Math.round(maxHp * bonuses.hp), x + 12 + baseW2 + 4, ly + 36);
+            ctx.font = "11px Georgia,serif";
+            ctx.fillText("+3", hpBarX + hpBarW + 6, ly + 5);
+            ctx.font = "14px Georgia,serif";
+        } else if (d.supplyStatus === 'starve' && (d.rations || 0) <= 0) {
+            ctx.fillStyle = "#e05040";
+            ctx.font = "11px Georgia,serif";
+            ctx.fillText("-5", hpBarX + hpBarW + 6, ly + 5);
+            ctx.font = "14px Georgia,serif";
         }
-        // 射程/移速以步兵为基准（步兵 = 1），其他单位换算为倍数
+        ly += 10;
+
+        // 射程
         let baseRange = UNIT_TYPES.infantry.range || 0.204;
-        let baseSpeed = UNIT_TYPES.infantry.speed || 0.0432;
         let rangeMult = range / baseRange;
-        let speedMult = speed / baseSpeed;
+        let _dX = d.rx, _dY = d.ry;
+        if (_dX === undefined) { let _pd0 = G.provinceData[d.province]; if (_pd0 && _pd0.center) { _dX = _pd0.center[0]; _dY = _pd0.center[1]; } }
+        let _tNow = (_dX !== undefined && typeof terrainAt === 'function') ? terrainAt(_dX, _dY) : null;
+        let rngNotePct = 0, spdNotePct = 0;
+        if (_tNow === 'mountains') {
+            let _mv = (typeof MOUNTAIN_MOVE_BY_TYPE !== 'undefined' && MOUNTAIN_MOVE_BY_TYPE[d.type]) ? MOUNTAIN_MOVE_BY_TYPE[d.type] : ((typeof TERRAIN_MOVE !== 'undefined' && TERRAIN_MOVE.mountains) || 0.55);
+            spdNotePct = Math.round((1 - _mv) * 100);
+            if (d.type === 'artillery') rngNotePct = Math.round((typeof ARTILLERY_MOUNTAIN_RANGE_BONUS !== 'undefined' ? ARTILLERY_MOUNTAIN_RANGE_BONUS : 0.2) * 100);
+        }
         ctx.fillStyle = "#c8a84a";
-        ctx.fillText("🎯 射程: " + (Math.round(rangeMult * 10) / 10), x + 12, ly + 54);
+        ctx.fillText("🎯 射程: " + (Math.round(rangeMult * 10) / 10), x + 12, ly);
+        if (rngNotePct > 0) {
+            let bwR = ctx.measureText("🎯 射程: " + (Math.round(rangeMult * 10) / 10)).width;
+            ctx.fillStyle = "#a0d860";
+            ctx.fillText("+" + rngNotePct + "%（山地）", x + 12 + bwR + 4, ly);
+        }
+        ly += LINE_H;
+
+        // 移速
+        let baseSpeed = UNIT_TYPES.infantry.speed || 0.0432;
+        let speedMult = speed / baseSpeed;
         ctx.fillStyle = "#4a9ad4";
-        ctx.fillText("🏃 移速: " + (Math.round(speedMult * 10) / 10) + speedNote, x + 12, ly + 72);
+        ctx.fillText("🏃 移速: " + (Math.round(speedMult * 10) / 10) + speedNote, x + 12, ly);
+        if (spdNotePct > 0) {
+            let bwS = ctx.measureText("🏃 移速: " + (Math.round(speedMult * 10) / 10) + speedNote).width;
+            ctx.fillStyle = "#d86a5a";
+            ctx.fillText("（山地 -" + spdNotePct + "%）", x + 12 + bwS + 4, ly);
+        }
         if (bonuses && bonuses.spd > 0) {
             let baseW3 = ctx.measureText("🏃 移速: " + (Math.round(speedMult * 10) / 10) + speedNote).width;
             ctx.fillStyle = "#a0d860";
-            ctx.fillText("+" + (Math.round(speedMult * bonuses.spd * 10) / 10), x + 12 + baseW3 + 4, ly + 72);
+            ctx.fillText("+" + (Math.round(speedMult * bonuses.spd * 10) / 10), x + 12 + baseW3 + 4, ly);
         }
+        ly += LINE_H;
 
+        // 空军闪避
+        if (d.type === 'airplane') {
+            let dodge = typeof navyDodgeRate === 'function' ? navyDodgeRate(d) : 0.7;
+            ctx.fillStyle = "#9b59b6";
+            ctx.fillText("✈️ 机动: " + (Math.round(dodge * 1000) / 10) + "%（闪避子弹）", x + 12, ly);
+            ly += LINE_H;
+        }
+        // 海军机动
         if (d.type === 'navy' && d.navyMvr !== undefined) {
             let dodge = typeof navyDodgeRate === 'function' ? navyDodgeRate(d) : 0;
             ctx.fillStyle = "#9b59b6";
-            ctx.fillText("⚓ 机动: " + (Math.round(dodge * 1000) / 10) + "%（闪避子弹）", x + 12, ly + 90);
+            ctx.fillText("⚓ 机动: " + (Math.round(dodge * 1000) / 10) + "%（闪避子弹）", x + 12, ly);
+            ly += LINE_H;
         }
+        // 潜艇状态
         if (subNote) {
             ctx.fillStyle = "#8ad4d4";
-            ctx.fillText("🌊 状态: " + subNote, x + 12, ly + 108);
+            ctx.fillText("🌊 状态: " + subNote, x + 12, ly);
+            ly += LINE_H;
         }
-        // 指挥加成汇总（集团军指挥官 + 总司令光环 叠加显示）
-        if (hasBonus) {
-            let parts = [];
-            if (bonuses.atk > 0) parts.push("攻击+" + Math.round(bonuses.atk * 100) + "%");
-            if (bonuses.hp > 0) parts.push("血量+" + Math.round(bonuses.hp * 100) + "%");
-            if (bonuses.spd > 0) parts.push("移速+" + Math.round(bonuses.spd * 100) + "%");
-            if (bonuses.logi > 0) parts.push("后勤-" + Math.round(bonuses.logi * 100) + "%");
-            // 明细拆分：集团军一行 + 总司令光环一行
-            let bd = (typeof getBonusBreakdown === 'function') ? getBonusBreakdown(d) : null;
-            let sumLines = 0;
+
+        // 补给状态（仅陆军，且仅己方部队显示，敌方补给情报不泄露）
+        if (!isSeaType(d.type) && d.country === G.playerCountry) {
+            let stIcon = d.supplyStatus === 'starve' ? "❌" : d.supplyStatus === 'low' ? "⚠️" : "✅";
+            let stColor = d.supplyStatus === 'starve' ? "#e05040" : d.supplyStatus === 'low' ? "#e8a040" : "#7ad47a";
+            let stText = d.supplyStatus === 'starve' ? "断粮" : d.supplyStatus === 'low' ? "短缺" : "充足";
+            ctx.fillStyle = stColor;
+            ctx.fillText("补给: " + stIcon + " " + stText, x + 12, ly);
+            ly += LINE_H;
+            let srcTxt = d.supplySource ? d.supplySource.cityName + "（" + d.supplySource.distKm + " km）" : "—";
+            ctx.fillStyle = "rgba(200,180,150,0.75)";
+            ctx.fillText("来源: " + srcTxt, x + 12, ly);
+            ly += LINE_H;
+            ctx.fillStyle = stColor;
+            let _rmax = (typeof rationsMaxFor === 'function') ? rationsMaxFor(d) : (typeof GRAIN_RATIONS_MAX !== 'undefined' ? GRAIN_RATIONS_MAX : 30);
+            ctx.fillText("口粮(天): " + Math.max(0, Math.floor(d.rations === undefined ? _rmax : d.rations)) + " / " + _rmax, x + 12, ly);
+            ly += LINE_H;
+            // 缺粮负收益 + 每日损耗
+            if (d.supplyStatus === 'starve') {
+                ctx.fillStyle = "#e05040";
+                ctx.font = "13px Georgia,serif";
+                ctx.fillText("⚠️ 缺粮惩罚: 伤害-40% 射程-40% 射速-40% 移速-40% 血量-40%", x + 12, ly);
+                ly += LINE_H;
+                ctx.fillText("☠️ 口粮耗尽: 每天扣 5 点兵力", x + 12, ly);
+                ly += LINE_H;
+                ctx.font = "14px Georgia,serif";
+            }
+        }
+
+        // 铁路运兵状态（乘车中/步行至站）
+        if (d.railTrip) {
+            let rt = d.railTrip;
+            let fromN = G.cities[rt.from] ? G.cities[rt.from].name : "?";
+            let toN = G.cities[rt.to] ? G.cities[rt.to].name : "?";
             ctx.fillStyle = "#c8a84a";
-            ctx.font = "11px Georgia,serif";
+            ctx.font = "13px Georgia,serif";
+            ctx.fillText((rt.stage === 'on_train' ? "🚂 乘车中" : "🚶 步行至站") + ": " + fromN + " → " + toN, x + 12, ly);
+            ly += LINE_H;
+            ctx.font = "14px Georgia,serif";
+        }
+
+        // 指挥加成汇总
+        if (hasBonus) {
+            let bd = (typeof getBonusBreakdown === 'function') ? getBonusBreakdown(d) : null;
+            ctx.fillStyle = "#c8a84a";
+            ctx.font = "12px Georgia,serif";
             if (bd && bd.group) {
                 let g = bd.group;
                 let gparts = [];
                 if (g.atk > 0) gparts.push("攻击+" + Math.round(g.atk * 100) + "%");
                 if (g.hp > 0) gparts.push("血量+" + Math.round(g.hp * 100) + "%");
                 if (g.spd > 0) gparts.push("移速+" + Math.round(g.spd * 100) + "%");
-                if (g.logi > 0) gparts.push("后勤-" + Math.round(g.logi * 100) + "%");
+                if (g.logi > 0) gparts.push("后勤+" + Math.round(g.logi * 100) + "%");
                 if (gparts.length > 0) {
-                    ctx.fillText("🎖️ " + g.name + "加成: " + gparts.join(" "), x + 12, ly + 128 + sumLines * 18);
-                    sumLines++;
+                    ctx.fillText("🎖️ " + g.name + "加成: " + gparts.join(" "), x + 12, ly);
+                    ly += 18;
                 }
             }
             if (bd && bd.aura) {
@@ -3084,31 +3366,31 @@ function drawSelectedUnitSidebar() {
                 for (let ef of bd.aura.effects) {
                     let statCN = ef.stat === 'atk' ? "攻击" : ef.stat === 'hp' ? "血量" : ef.stat === 'spd' ? "移速" : "后勤";
                     let v = ef.value || 0;
-                    let sign = v < 0 ? '-' : (ef.stat === 'logi' ? '-' : '+');
+                    let sign = v < 0 ? '-' : '+';
                     aparts.push(statCN + sign + Math.round(Math.abs(v) * 100) + "%");
                 }
-                ctx.fillText("🎖️ 总司令光环(" + bd.aura.name + "): " + aparts.join("/"), x + 12, ly + 128 + sumLines * 18);
-                sumLines++;
+                ctx.fillText("🎖️ 总司令光环(" + bd.aura.name + "): " + aparts.join("/"), x + 12, ly);
+                ly += 18;
             }
-            if (sumLines === 0) {
-                ctx.fillText("🎖️ 加成: " + parts.join(" "), x + 12, ly + 128);
-                sumLines = 1;
+            if (!bd || (!bd.group && !bd.aura)) {
+                let parts = [];
+                if (bonuses.atk > 0) parts.push("攻击+" + Math.round(bonuses.atk * 100) + "%");
+                if (bonuses.hp > 0) parts.push("血量+" + Math.round(bonuses.hp * 100) + "%");
+                if (bonuses.spd > 0) parts.push("移速+" + Math.round(bonuses.spd * 100) + "%");
+                if (bonuses.logi > 0) parts.push("后勤+" + Math.round(bonuses.logi * 100) + "%");
+                ctx.fillText("🎖️ 加成: " + parts.join(" "), x + 12, ly);
+                ly += 18;
             }
-            // 简介与造价按汇总行数下移
-            let descLy = hasBonus ? (ly + 128 + sumLines * 18 + 4) : ly + 126;
-            ctx.fillStyle = "rgba(200,180,150,0.45)";
-            ctx.font = "10px Georgia,serif";
-            ctx.fillText("📜 " + (ut.desc || ""), x + 12, descLy);
-            ctx.fillStyle = "rgba(200,180,150,0.25)";
-            ctx.fillText("造价 " + ut.cost + "金 / 人力 " + (ut.manpower || 0) + "千", x + 12, descLy + 16);
-        } else {
-            let descLy = ly + 126;
-            ctx.fillStyle = "rgba(200,180,150,0.45)";
-            ctx.font = "10px Georgia,serif";
-            ctx.fillText("📜 " + (ut.desc || ""), x + 12, descLy);
-            ctx.fillStyle = "rgba(200,180,150,0.25)";
-            ctx.fillText("造价 " + ut.cost + "金 / 人力 " + (ut.manpower || 0) + "千", x + 12, descLy + 16);
         }
+
+        // 简介与造价
+        ly += 2;
+        ctx.fillStyle = "rgba(200,180,150,0.5)";
+        ctx.font = "11px Georgia,serif";
+        ctx.fillText("📜 " + (ut.desc || ""), x + 12, ly);
+        ly += 18;
+        ctx.fillStyle = "rgba(200,180,150,0.3)";
+        ctx.fillText("造价 " + ut.cost + "金 / 人力 " + (ut.manpower || 0) + "千", x + 12, ly);
     }
 
     // Formation buttons (when multiple navy selected)
@@ -3118,117 +3400,289 @@ function drawSelectedUnitSidebar() {
         ly += 10;
 
         ctx.fillStyle = "#6a8aaa";
-        ctx.font = "bold 10px Georgia,serif";
+        ctx.font = "bold 13px Georgia,serif";
         ctx.textAlign = "center";
         ctx.fillText("⚓ 海军阵型", x + w/2, ly);
-        ly += 20;
+        ly += 22;
 
         // Check if all selected navy have 'line' formation already
         let allLine = navySel.every(d => d.formation === 'line');
 
         if (allLine) {
             // Cancel formation button
-            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
-            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 22, "✖ 解除阵型", {
+            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, "✖ 解除阵型", {
                 hovered: hovered,
                 style: "danger",
-                font: "bold 10px Georgia,serif"
+                font: "bold 12px Georgia,serif"
             });
             if (!window._sibBtns) window._sibBtns = [];
-            window._sibBtns.push({id:"formation_remove", x:x+8, y:ly, w:w-16, h:22, tooltip:"解除所有选中海军的一字阵"});
+            window._sibBtns.push({id:"formation_remove", x:x+8, y:ly, w:w-16, h:26, tooltip:"解除所有选中海军的一字阵"});
         } else {
             // Line formation button
-            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 22 && mouseX > x + 8 && mouseX < x + w - 8;
-            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 22, "— 一字阵", {
+            let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, "— 一字阵", {
                 hovered: hovered,
                 style: "info",
-                font: "bold 10px Georgia,serif"
+                font: "bold 12px Georgia,serif"
             });
             if (!window._sibBtns) window._sibBtns = [];
-            window._sibBtns.push({id:"formation_apply", x:x+8, y:ly, w:w-16, h:22, tooltip:"将选中海军排列成一字阵（垂直于前进方向）"});
+            window._sibBtns.push({id:"formation_apply", x:x+8, y:ly, w:w-16, h:26, tooltip:"将选中海军排列成一字阵（垂直于前进方向）"});
         }
-        ly += 26;
+        ly += 30;
 
         // Formation status info
         ctx.fillStyle = "rgba(200,180,150,0.4)";
-        ctx.font = "9px Georgia,serif";
+        ctx.font = "11px Georgia,serif";
         ctx.textAlign = "center";
         ctx.fillText("点击单位后可移除阵型", x + w/2, ly);
     }
 
     // Submarine dive button
     if (hasSub) {
-        let btnY2 = y + h - 58 - (canFormGroup ? 30 : 0);
+        let btnY2 = y + h - 62 - (canFormGroup ? 34 : 0);
         let allSubmerged = selDivs.filter(d => d.type === 'submarine').every(d => d.submerged);
         let label = allSubmerged ? "🔼 上浮" : "⬇️ 下潜";
-        let hovered = mouseY !== undefined && mouseY > btnY2 && mouseY < btnY2 + 22 && mouseX > x + 8 && mouseX < x + w - 8;
-        CT.drawRoundedBtn(ctx, x + 8, btnY2, w - 16, 22, label, {
+        let hovered = mouseY !== undefined && mouseY > btnY2 && mouseY < btnY2 + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+        CT.drawRoundedBtn(ctx, x + 8, btnY2, w - 16, 26, label, {
             hovered: hovered,
             style: "info",
-            font: "bold 11px Georgia,serif"
+            font: "bold 13px Georgia,serif"
         });
         if (!window._sibBtns) window._sibBtns = [];
-        window._sibBtns.push({id:"sub_dive", x:x+8, y:btnY2, w:w-16, h:22, tooltip: allSubmerged ? "上浮至水面" : "下潜至水下（隐身，无法攻击）"});
+        window._sibBtns.push({id:"sub_dive", x:x+8, y:btnY2, w:w-16, h:26, tooltip: allSubmerged ? "上浮至水面" : "下潜至水下（隐身，无法攻击）"});
     }
 
     // 指挥系统：编入集团军按钮（本国陆军），置于驻守/前线按钮下方
     if (canFormGroup) {
-        let gy = y + h - 28;
-        let hovered = mouseY !== undefined && mouseY > gy && mouseY < gy + 22 && mouseX > x + 8 && mouseX < x + w - 8;
-        CT.drawRoundedBtn(ctx, x + 8, gy, w - 16, 22, "⚔️ 编入集团军", {
+        let gy = y + h - 64;
+        let hovered = mouseY !== undefined && mouseY > gy && mouseY < gy + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+        CT.drawRoundedBtn(ctx, x + 8, gy, w - 16, 26, "⚔️ 编入集团军", {
             hovered: hovered,
             style: "success",
-            font: "bold 11px Georgia,serif"
+            font: "bold 13px Georgia,serif"
         });
         if (!window._sibBtns) window._sibBtns = [];
-        window._sibBtns.push({id:"armygroup_form", x:x+8, y:gy, w:w-16, h:22, tooltip:"加入现有集团军，或1个师即编成新集团军（已在集团军中的师也可移入其他集团军）" });
+        window._sibBtns.push({id:"armygroup_form", x:x+8, y:gy, w:w-16, h:26, tooltip:"加入现有集团军，或1个师即编成新集团军（已在集团军中的师也可移入其他集团军）" });
+    }
+
+    // 铁路运兵按钮（本国陆军，置于最底）：先步行到最近铁路站，再乘火车
+    if (railSel.length > 0) {
+        let rbY = y + h - 30;
+        let hovered = mouseY !== undefined && mouseY > rbY && mouseY < rbY + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+        CT.drawRoundedBtn(ctx, x + 8, rbY, w - 16, 26, "🚂 铁路运兵", {
+            hovered: hovered,
+            style: "highlight",
+            font: "bold 13px Georgia,serif"
+        });
+        if (!window._sibBtns) window._sibBtns = [];
+        window._sibBtns.push({id:"rail_trip", x:x+8, y:rbY, w:w-16, h:26, tooltip:"选择目标站：部队先步行至最近车站，再沿本国铁路网乘车直达（山地段较慢）"});
     }
 
     // Patrol + Frontline buttons (always visible when units are selected)
-    let btnY = y + h - 28;
-    if (canFormGroup) btnY -= 30;
+    let btnY = y + h - 30;
+    if (canFormGroup) btnY -= 34;
+    if (railSel.length > 0) btnY -= 34;
     // Check if any selected unit is on patrol
     let anyPatrol = selDivs.some(d => G.patrolTargets[d.id] && G.patrolTargets[d.id].length > 0);
 
     if (anyPatrol) {
         // Cancel patrol button (red) — full width
-        let hovered = mouseY !== undefined && mouseY > btnY && mouseY < btnY + 22 && mouseX > x + 8 && mouseX < x + w - 8;
-        CT.drawRoundedBtn(ctx, x + 8, btnY, w - 16, 22, "🗑️ 取消巡逻", {
+        let hovered = mouseY !== undefined && mouseY > btnY && mouseY < btnY + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+        CT.drawRoundedBtn(ctx, x + 8, btnY, w - 16, 26, "🗑️ 取消巡逻", {
             hovered: hovered,
             style: "danger",
-            font: "bold 10px Georgia,serif"
+            font: "bold 12px Georgia,serif"
         });
         if (!window._sibBtns) window._sibBtns = [];
-        window._sibBtns.push({id:"patrol_remove", x:x+8, y:btnY, w:w-16, h:22, tooltip:"取消选中单位的驻守"});
+        window._sibBtns.push({id:"patrol_remove", x:x+8, y:btnY, w:w-16, h:26, tooltip:"取消选中单位的驻守"});
     } else {
         // Two buttons: Patrol (left) + Frontline (right)
         let btnW2 = (w - 20) / 2;
         { // Patrol
-            let hovered = mouseY !== undefined && mouseY > btnY && mouseY < btnY + 22 && mouseX > x + 8 && mouseX < x + 8 + btnW2;
-            CT.drawRoundedBtn(ctx, x + 8, btnY, btnW2, 22, "🛡️ 驻守", {
+            let hovered = mouseY !== undefined && mouseY > btnY && mouseY < btnY + 26 && mouseX > x + 8 && mouseX < x + 8 + btnW2;
+            CT.drawRoundedBtn(ctx, x + 8, btnY, btnW2, 26, "🛡️ 驻守", {
                 hovered: hovered,
                 style: "info",
-                font: "bold 10px Georgia,serif"
+                font: "bold 12px Georgia,serif"
             });
             if (!window._sibBtns) window._sibBtns = [];
-            window._sibBtns.push({id:"patrol_add", x:x+8, y:btnY, w:btnW2, h:22, tooltip:"在选中单位的当前省份驻守"});
+            window._sibBtns.push({id:"patrol_add", x:x+8, y:btnY, w:btnW2, h:26, tooltip:"在选中单位的当前省份驻守"});
         }
         { // Frontline
             let flBtnX = x + 12 + btnW2;
-            let hovered = mouseY !== undefined && mouseY > btnY && mouseY < btnY + 22 && mouseX > flBtnX && mouseX < flBtnX + btnW2;
+            let hovered = mouseY !== undefined && mouseY > btnY && mouseY < btnY + 26 && mouseX > flBtnX && mouseX < flBtnX + btnW2;
             let hasActiveFrontlines = G.frontlineGroups && G.frontlineGroups.length > 0;
             let flBtnText = G.frontlineDrawing ? "✅ 绘制中" : (hasActiveFrontlines ? "⏏️ 取消" : "⚔️ 前线");
-            CT.drawRoundedBtn(ctx, flBtnX, btnY, btnW2, 22, flBtnText, {
+            CT.drawRoundedBtn(ctx, flBtnX, btnY, btnW2, 26, flBtnText, {
                 hovered: hovered,
                 style: "default",
-                font: "bold 10px Georgia,serif"
+                font: "bold 12px Georgia,serif"
             });
             if (!window._sibBtns) window._sibBtns = [];
             let tip = G.frontlineDrawing ? "再次点击取消绘制" : (hasActiveFrontlines ? "再次点击取消所有前线" : "选中部队后点击，然后在敌国边境画指挥线");
-            window._sibBtns.push({id:"frontline", x:flBtnX, y:btnY, w:btnW2, h:22, tooltip: tip});
+            window._sibBtns.push({id:"frontline", x:flBtnX, y:btnY, w:btnW2, h:26, tooltip: tip});
         }
     }
 
+    ctx.restore();
+}
+// ===== 铁路运兵弹窗：起点站 → 可达城市列表 =====
+function drawRailModal() {
+    let m = G._railModal;
+    if (!m) return;
+    // 单位入口：fromCity=null，各自就近上车；refCity 是参考站（用于计算可达列表）
+    let refCityId = m.fromCity || m.refCity;
+    if (!refCityId) { G._railModal = null; return; }
+    let from = G.cities[refCityId];
+    if (!from) { G._railModal = null; return; }
+
+    // 缓存可达列表（按起点站+国家；每 0.5s 刷新以反映城市易主）
+    let key = from.id + '|' + G.playerCountry;
+    if (m._key !== key || performance.now() - (m._t || 0) > 500) {
+        let reach = railwayReachableCities(from.id, G.playerCountry);
+        let rows = [];
+        for (let cid of reach) {
+            if (cid === from.id) continue;
+            let c = G.cities[cid];
+            if (!c) continue;
+            let p = railwayPath(from.id, cid, G.playerCountry);
+            if (!p || p.length < 2) continue;
+            let km = 0, mtnSegs = 0;
+            for (let i = 0; i < p.length - 1; i++) {
+                let ca = G.cities[p[i]], cb = G.cities[p[i + 1]];
+                if (!ca || !cb) { km = -1; break; }
+                km += Math.hypot(cb.lon - ca.lon, cb.lat - ca.lat) * (KM_PER_DEG || 111);
+                if (typeof railwayIsMountain === 'function' && railwayIsMountain(railwayKey(p[i], p[i + 1]))) mtnSegs++;
+            }
+            if (km < 0) continue;
+            let spd = ((typeof UNIT_TYPES !== 'undefined' && UNIT_TYPES.infantry) ? UNIT_TYPES.infantry.speed : 0.0432) * 2.5 * (KM_PER_DEG || 111);
+            let eta = km / spd;
+            rows.push({ id: cid, name: c.name, km: Math.round(km), eta: Math.max(0.5, Math.round(eta * 10) / 10), mtn: mtnSegs, owner: c.owner });
+        }
+        rows.sort((a, b) => a.km - b.km);
+        m._rows = rows;
+        m._key = key;
+        m._t = performance.now();
+    }
+    let rows = m._rows || [];
+    let w = 460, rowH = 26, maxVis = 12;
+    let listH = Math.min(rows.length, maxVis) * rowH;
+    let h = listH + 200;
+    let x = canvas.width / 2 - w / 2;
+    let y = Math.max(TOP_BAR_HEIGHT + 8, canvas.height / 2 - h / 2);
+    if (y + h > canvas.height - BOTTOM_BAR_HEIGHT) y = canvas.height - BOTTOM_BAR_HEIGHT - h;
+
+    ctx.save();
+    CT.drawPanel(ctx, x, y, w, h, { accentColor: "#c8a830" });
+    window._railModalRect = { x: x, y: y, w: w, h: h };
+    if (!window._railModalBtns) window._railModalBtns = [];
+    ctx.textBaseline = "top";
+
+    // 标题
+    ctx.fillStyle = "#c8a830";
+    ctx.font = "bold 16px Georgia,serif";
+    ctx.textAlign = "center";
+    ctx.fillText("🚂 铁路运兵", x + w / 2, y + 14);
+    ctx.textAlign = "left";
+    ctx.font = "12px Georgia,serif";
+    ctx.fillStyle = "rgba(200,180,150,0.8)";
+    ctx.fillText("起点站: 每支部队各自就近上车（参考: " + from.name + "）", x + 16, y + 40);
+    ctx.fillStyle = "rgba(200,180,150,0.5)";
+    ctx.font = "11px Georgia,serif";
+    ctx.fillText("部队先步行至起点站 → 乘车直达 → 到站下车；途中铁路被切断将自动下车", x + 16, y + 58);
+    // 运费说明（按兵种单价）
+    ctx.fillStyle = "rgba(232,200,120,0.85)";
+    let costTxt = "";
+    if (typeof RAIL_TRIP_COST !== 'undefined') {
+        let parts = [];
+        let unitCn = { infantry: "步", engineer: "工", cavalry: "骑", mountain: "山", artillery: "炮" };
+        for (let t in RAIL_TRIP_COST) parts.push((unitCn[t] || t) + "$" + RAIL_TRIP_COST[t]);
+        costTxt = "运费: " + parts.join(" ") + " / 队";
+    }
+    ctx.fillText(costTxt, x + 16, y + 76);
+
+    // 表头
+    let headY = y + 98;
+    ctx.fillStyle = "rgba(200,180,150,0.55)";
+    ctx.font = "11px Georgia,serif";
+    ctx.textBaseline = "top";
+    ctx.textAlign = "left";
+    ctx.fillText("目的站", x + 18, headY);
+    ctx.textAlign = "right";
+    ctx.fillText("里程 · ETA", x + w - 18, headY);
+    ctx.textAlign = "left";
+    // 分隔线
+    let lineY = headY + 18;
+    ctx.strokeStyle = "rgba(200,180,150,0.25)";
+    ctx.beginPath(); ctx.moveTo(x + 10, lineY); ctx.lineTo(x + w - 10, lineY); ctx.stroke();
+    // 列表区
+    let listTop = lineY + 6;
+    let listBottom = listTop + listH;
+
+    if (rows.length === 0) {
+        ctx.fillStyle = "#e05040";
+        ctx.font = "13px Georgia,serif";
+        ctx.textAlign = "center";
+        ctx.fillText("该站无可用铁路或无可达城市", x + w / 2, listTop + 16);
+        ctx.textAlign = "left";
+    } else {
+        window._railModalMaxScroll = Math.max(0, rows.length * rowH - listH);
+        m.scroll = Math.min(m.scroll || 0, window._railModalMaxScroll);
+        let first = Math.floor(m.scroll / rowH);
+        let last = Math.min(rows.length, first + maxVis + 1);
+        for (let i = first; i < last; i++) {
+            let row = rows[i];
+            let ry = listTop + (i - first) * rowH - (m.scroll % rowH);
+            if (ry < listTop - rowH || ry > listBottom) continue;
+            let hovered = mouseY !== undefined && mouseY > ry && mouseY < ry + rowH && mouseX > x + 10 && mouseX < x + w - 10;
+            if (hovered) {
+                ctx.fillStyle = "rgba(200,168,48,0.18)";
+                ctx.fillRect(x + 10, ry, w - 20, rowH);
+            }
+            // 左列：城市名（+他国归属）
+            ctx.textBaseline = "middle";
+            ctx.fillStyle = hovered ? "#f0e6d0" : "#e8d8b0";
+            ctx.font = "13px Georgia,serif";
+            ctx.textAlign = "left";
+            ctx.fillText(row.name + (row.owner && row.owner !== G.playerCountry ? "（" + (COUNTRY_CN[row.owner] || row.owner) + "）" : ""), x + 18, ry + rowH / 2);
+            // 右列：里程 · ETA（⛰ 标记绿色）
+            ctx.textAlign = "right";
+            ctx.font = "12px Georgia,serif";
+            ctx.fillStyle = "rgba(200,180,150,0.75)";
+            let mtnW = 0;
+            if (row.mtn > 0) {
+                ctx.fillStyle = "#a0d860";
+                ctx.fillText("⛰" + row.mtn, x + w - 18, ry + rowH / 2);
+                mtnW = ctx.measureText("⛰" + row.mtn).width + 6;
+            }
+            ctx.fillStyle = "rgba(200,180,150,0.75)";
+            ctx.fillText(row.km + " km · " + row.eta + " 天", x + w - 18 - mtnW, ry + rowH / 2);
+            ctx.textAlign = "left";
+            ctx.textBaseline = "top";
+            window._railModalBtns.push({ id: 'rail_to_' + row.id, x: x + 10, y: ry, w: w - 20, h: rowH });
+        }
+        // 滚动条
+        if (window._railModalMaxScroll > 0) {
+            let sbH = listH;
+            let thumbH = Math.max(18, sbH * (maxVis / rows.length));
+            let thumbY = listTop + (sbH - thumbH) * (m.scroll / window._railModalMaxScroll);
+            ctx.fillStyle = "rgba(255,255,255,0.1)";
+            ctx.fillRect(x + w - 12, listTop, 5, sbH);
+            ctx.fillStyle = "rgba(200,168,48,0.7)";
+            ctx.fillRect(x + w - 12, thumbY, 5, thumbH);
+        }
+    }
+
+    // 关闭按钮
+    let by = y + h - 52;
+    let hovered = mouseY !== undefined && mouseY > by && mouseY < by + 30 && mouseX > x + 10 && mouseX < x + w - 10;
+    CT.drawRoundedBtn(ctx, x + 10, by, w - 20, 30, "✖ 取消", {
+        hovered: hovered,
+        style: "default",
+        font: "bold 13px Georgia,serif"
+    });
+    window._railModalBtns.push({ id: 'rail_close', x: x + 10, y: by, w: w - 20, h: 30 });
     ctx.restore();
 }
 function drawDiploTooltip(text, x, y) {

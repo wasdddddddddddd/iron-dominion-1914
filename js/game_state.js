@@ -24,6 +24,8 @@ let G = {
     relations: {},
     alliances: {},
     militaryAccess: {},
+    railways: {},
+    railwaysView: true,
     events: [],
     activeEvent: null,
     buildQueue: [],
@@ -84,17 +86,20 @@ const POPULATION = {"GERMANY":67,"FRANCE":39,"UK":52,"ITALY":35,"AUSTRIA_HUNGARY
 // Manpower consumed per unit type (thousands of men)
 const MANPOWER_COST = {
     infantry: 15, engineer: 12, cavalry: 10, artillery: 8,
+    mountain: 13, airplane: 3,
     navy: 5, submarine: 3,
 };
 
 // Unit type configs — COSTS BALANCED (higher costs, lower income)
 const UNIT_TYPES = {
-    infantry: { cost:50, range:0.204, fireRate:1, damage:14, speed:0.0432, maxStr:100, bulletSpeed:1.4, sym:"🪖", img:"images/unit_infantry.png", label:"步兵", desc:"基准，全能主力", manpower:15 },
-    engineer: { cost:70, range:0.1428, fireRate:1.25, damage:8.4, speed:0.0389, maxStr:110, bulletSpeed:1.12, sym:"🛠️", img:"images/unit_engineer.png", label:"工兵", desc:"工程/攻城", manpower:12 },
-    cavalry:  { cost:80, range:0.1224, fireRate:1.43, damage:11.2, speed:0.0648, maxStr:90, bulletSpeed:1.26, sym:"🏇", img:"images/unit_cavalry.png", label:"骑兵", desc:"高速机动/包抄", manpower:10 },
-    artillery:{ cost:120, range:0.675, fireRate:5, damage:35, speed:0.0259, maxStr:70, bulletSpeed:2.52, sym:"💥", img:"images/unit_artillery.png", label:"炮兵", desc:"远程火力压制", manpower:8 },
-    navy:     { cost:500, range:0.816, fireRate:1.5, damage:80, speed:0.0675, maxStr:500, bulletSpeed:12, sym:"🚢", img:"images/unit_navy.png", label:"海军", desc:"巨舰大炮", manpower:5 },
-    submarine:{ cost:350, range:0.9, fireRate:3, damage:55, speed:0.04, maxStr:200, bulletSpeed:10, sym:"🐬", img:"images/unit_submarine.png", label:"潜艇", desc:"水下伏击，幽灵猎手", manpower:3 },
+    infantry: { cost:50, range:0.204, fireRate:1, damage:14, speed:0.0432, maxStr:100, bulletSpeed:1.4, sym:"🪖", img:"images/units/generic/infantry.png", label:"步兵", desc:"基准，全能主力", manpower:15 },
+    engineer: { cost:70, range:0.1428, fireRate:1.25, damage:8.4, speed:0.0389, maxStr:110, bulletSpeed:1.12, sym:"🛠️", img:"images/units/generic/engineer.png", label:"工兵", desc:"工程/攻城", manpower:12 },
+    cavalry:  { cost:80, range:0.1224, fireRate:1.43, damage:11.2, speed:0.0648, maxStr:90, bulletSpeed:1.26, sym:"🏇", img:"images/units/generic/cavalry.png", label:"骑兵", desc:"高速机动/包抄", manpower:10 },
+    artillery:{ cost:120, range:0.675, fireRate:5, damage:35, speed:0.0259, maxStr:70, bulletSpeed:2.52, sym:"💥", img:"images/units/generic/artillery.png", label:"炮兵", desc:"远程火力压制", manpower:8 },
+    mountain: { cost:85, range:0.1632, fireRate:1.2, damage:11.9, speed:0.0475, maxStr:105, bulletSpeed:1.26, sym:"🏔️", img:"images/units/generic/mountain.png?v=2", label:"山地师", desc:"山地作战/快速部署", manpower:13 },
+    airplane: { cost:200, range:0.45, fireRate:0.8, damage:13, speed:0.18, maxStr:40, bulletSpeed:18, sym:"✈️", img:"images/units/generic/airplane.png", label:"空军", desc:"空中侦察/轰炸", manpower:3 },
+    navy:     { cost:500, range:0.816, fireRate:1.5, damage:80, speed:0.0675, maxStr:500, bulletSpeed:12, sym:"🚢", img:"images/units/generic/navy.png", label:"海军", desc:"巨舰大炮", manpower:5 },
+    submarine:{ cost:350, range:0.9, fireRate:3, damage:55, speed:0.04, maxStr:200, bulletSpeed:10, sym:"🐬", img:"images/units/generic/submarine.png", label:"潜艇", desc:"水下伏击，幽灵猎手", manpower:3 },
 };
 
 function initProvinceData() {
@@ -184,8 +189,9 @@ function initProvinceData() {
 }
 
 function isLandPoint(x, y) {
-    for (let p of PROVINCES) {
-        if (p.x >= 900) continue;
+    let cell = provCandidates(x, y);
+    if (!cell) return false;
+    for (let p of cell) {
         let bb = PROVINCE_BBOX[p.id];
         if (!bb) continue;
         if (x < bb.minX || x > bb.maxX || y < bb.minY || y > bb.maxY) continue;
@@ -288,6 +294,7 @@ function createDivision(provinceId, country, type, skipCost) {
         attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
         fireCooldown: 0, maxFireCd: 0, exp: 0,
         facing: 'e',
+        moveDx: 0,
     };
     G.divisions.push(div);
     pd.garrison = (pd.garrison || 0) + 1;
@@ -414,6 +421,11 @@ function initCities() {
         }
         // 首都500血，大城市200血，小城市100血
         let maxHp = city.isCapital ? 500 : (isMajorCity(city.id) ? 200 : 100);
+        // 城市类型：首都 > 农业城市 > 大城市 > 小城市
+        let ctKey = city.isCapital ? 'capital'
+            : (typeof AGRICULTURAL_CITY_IDS !== 'undefined' && AGRICULTURAL_CITY_IDS.includes(city.id)) ? 'agri'
+            : isMajorCity(city.id) ? 'major' : 'small';
+        let gCfg = (typeof GRAIN_CITY_CFG !== 'undefined' && GRAIN_CITY_CFG[ctKey]) ? GRAIN_CITY_CFG[ctKey] : GRAIN_CITY_CFG.small;
         G.cities[city.id] = {
             ...city,
             hp: maxHp,
@@ -423,6 +435,15 @@ function initCities() {
             owner: city.country,
             fireCooldown: 0,
             maxFireCd: 1,
+            // 粮食系统
+            cityType: ctKey,
+            grainPerMonth: gCfg.grainPerMonth,
+            grainMax: gCfg.grainMax,
+            supplyRadius: gCfg.supplyRadius,
+            grain: Math.round(gCfg.grainMax * 0.8),
+            grainUpgraded: false,
+            grainUpgradeProgress: 0,
+            suppliedDivs: 0,
         };
     }
     // 预计算省份→城市映射，避免每帧 O(provinces*cities) 扫描
@@ -897,4 +918,12 @@ function findCityAtScreen(sx, sy) {
         if (dist < bestDist) { best = city; bestDist = dist; }
     }
     return best;
+}
+
+// ===== 铁路网初始化（预设主干线；运行时修建的段并入同一字典） =====
+if (typeof PRESET_RAILWAYS !== 'undefined' && G.railways && Object.keys(G.railways).length === 0) {
+    for (let seg of PRESET_RAILWAYS) {
+        let k = seg[0] < seg[1] ? seg[0] + '|' + seg[1] : seg[1] + '|' + seg[0];
+        G.railways[k] = { progress: 1, started: 0 };
+    }
 }

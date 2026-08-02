@@ -83,7 +83,7 @@ const CITIES = [
     { id:'belfast', name:'贝尔法斯特', country:'UK', lon:-5.93, lat:54.60, isCapital:false },
     { id:'cardiff', name:'加的夫', country:'UK', lon:-3.18, lat:51.48, isCapital:false },
     { id:'york', name:'约克', country:'UK', lon:-1.08, lat:53.96, isCapital:false },
-    { id:'dublin', name:'都柏林', country:'UK', lon:-6.27, lat:53.35, isCapital:true },
+    { id:'dublin', name:'都柏林', country:'UK', lon:-6.27, lat:53.35 },
     { id:'cork', name:'科克', country:'UK', lon:-8.47, lat:51.90, isCapital:false },
     { id:'galway', name:'戈尔韦', country:'UK', lon:-9.05, lat:53.27, isCapital:false },
     { id:'limerick', name:'利默里克', country:'UK', lon:-8.63, lat:52.67, isCapital:false },
