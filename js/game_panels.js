@@ -454,7 +454,8 @@ function unitSprite(div, imgSize, flip) {
 const DUST_SIN_T = (() => { const a = new Float32Array(1024); for (let i = 0; i < 1024; i++) a[i] = Math.sin(i / 1024 * Math.PI * 2); return a; })();
 
 function drawDivisions() {
-    // 每帧一次构建的索引（替代各循环内线性 find/includes）
+    // 城市视图模式：不渲染单位
+    if (G.cityViewMode) return;
     let _divByIdMap = new Map();
     for (let _x of G.divisions) _divByIdMap.set(_x.id, _x);
     // 1) Projectiles
@@ -495,7 +496,8 @@ function drawDivisions() {
         if (rx===null) { let pd = G.provinceData[singleSel.province]; if(pd&&pd.center){rx=pd.center[0];ry=pd.center[1];} }
         let [sx, sy] = worldToScreen(rx, ry);
         let ut = UNIT_TYPES[singleSel.type] || UNIT_TYPES.infantry;
-        let cRange = ut.range;
+        // 断粮/短缺状态：射程圈按属性倍率缩放（与战斗实际射程一致）
+        let cRange = (singleSel.navyRng !== undefined ? singleSel.navyRng : ut.range) * ((typeof grainMultFor === 'function') ? grainMultFor(singleSel) : 1);
         // 炮兵位于山地：射程 +20%，动态调整射程圈
         if (singleSel.type === 'artillery' && typeof terrainAt === 'function' && terrainAt(rx, ry) === 'mountains') {
             cRange *= 1 + (typeof ARTILLERY_MOUNTAIN_RANGE_BONUS !== 'undefined' ? ARTILLERY_MOUNTAIN_RANGE_BONUS : 0.2);
@@ -561,7 +563,12 @@ function drawDivisions() {
         let ut = UNIT_TYPES[div.type] || UNIT_TYPES.infantry;
         // 战术层缩放：zoom 低于 TACTICAL_ZOOM 时单位和建筑保持固定大小，不再随视野拉远缩小
         let effZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
-        let imgSize = (div.type === 'navy' ? BASE * 5 : BASE * 0.875) * effZoom; // 海军不变，陆军缩小1/2
+        // 战略层单位动态放大：周期脉冲呼吸（让远处部队更醒目）；战役/战术层不放大
+        let pulse = 1;
+        if (zoom < STRATEGIC_ZOOM && div.type !== 'navy' && div.type !== 'submarine') {
+            pulse = 1 + 0.5 * DUST_SIN_T[(_nowMs / 300) & 1023];
+        }
+        let imgSize = (div.type === 'navy' ? BASE * 5 : BASE * 0.875 / 3) * effZoom * pulse; // 海军不变，陆军缩小为1/3
         let r = 6; // 基础指示器半径（扬尘、集火等）
         let selR = isSel ? (div.type === 'navy' ? imgSize * 0.55 : imgSize * 0.50) : 0; // 选中圈随单位等比缩放
 
@@ -598,17 +605,26 @@ function drawDivisions() {
         let img = countryImg || UNIT_IMAGES[div.type];
         ctx.save();
         let usingSprite = false;
+        let glDrawn = false;
         if (div.type !== 'submarine') {
-            const shouldFlip = (div.moveDx || 0) < 0;
-            let spr = unitSprite(div, imgSize, shouldFlip);
-            if (spr) {
-                usingSprite = true;
-                ctx.globalAlpha = div.type === 'navy' ? 0.92 : 0.85;
-                let imgY = div.type === 'airplane' ? sy - imgSize * 0.35 : sy;
-                ctx.drawImage(spr, sx - spr.width / 2, imgY - spr.height / 2, spr.width, spr.height);
+            const shouldFlip = false; // 取消单位镜像翻转
+            // WebGL 批量渲染优先（方案B：单位本体一次 drawArrays 完成）
+            if (typeof GLU !== 'undefined' && GLU.isEnabled() && img && img.width > 0) {
+                if (GLU.pushUnit(img, sx, sy - (div.type === 'airplane' ? imgSize * 0.35 : 0), imgSize + 6, imgSize + 6, shouldFlip, 1.0)) {
+                    glDrawn = true;
+                }
+            }
+            if (!glDrawn) {
+                let spr = unitSprite(div, imgSize, shouldFlip);
+                if (spr) {
+                    usingSprite = true;
+                    ctx.globalAlpha = 1.0;
+                    let imgY = div.type === 'airplane' ? sy - imgSize * 0.35 : sy;
+                    ctx.drawImage(spr, sx - spr.width / 2, imgY - spr.height / 2, spr.width, spr.height);
+                }
             }
         }
-        if (!usingSprite) {
+        if (!usingSprite && !glDrawn) {
             // 潜艇（动态 alpha）或贴图未加载：原绘制路径
             if (div.type === 'submarine') {
                 let subAlpha = 1;
@@ -618,18 +634,12 @@ function drawDivisions() {
             }
             if (img && img.width > 0) {
                 if (div.type !== 'submarine') {
-                    ctx.globalAlpha = div.type === 'navy' ? 0.92 : 0.85;
+                    ctx.globalAlpha = 1.0;
                 }
                 if (div.type !== 'navy') ctx.imageSmoothingEnabled = false;
-                const shouldFlip = (div.moveDx || 0) < 0;
+                const shouldFlip = false; // 取消单位镜像翻转
                 let imgY = div.type === 'airplane' ? sy - imgSize * 0.35 : sy;
-                if (shouldFlip) {
-                    ctx.translate(sx, sy);
-                    ctx.scale(-1, 1);
-                    ctx.drawImage(img, -imgSize/2, imgY - sy - imgSize/2, imgSize, imgSize);
-                } else {
-                    ctx.drawImage(img, sx - imgSize/2, imgY - imgSize/2, imgSize, imgSize);
-                }
+                ctx.drawImage(img, sx - imgSize/2, imgY - imgSize/2, imgSize, imgSize);
                 if (div.type !== 'navy') ctx.imageSmoothingEnabled = true;
             } else {
                 // 后备：图片未加载完成时显示emoji
@@ -656,15 +666,28 @@ function drawDivisions() {
             let ph2 = (_nowMs / 280) & 1023;
             let st = DUST_SIN_T;
             let seedBase = (div.id * 97) & 1023;
-            ctx.fillStyle = 'rgba(205,190,160,0.45)';
-            for (let i = 0; i < 4; i++) {
-                let seed = (seedBase + i * 257) & 1023;
-                let angIdx = (ph + seed) & 1023;
-                let dist = r * 0.6 + st[(ph2 / 2 + seed * 3) & 1023] * r * 0.55;
-                let size = 2.2 + st[(ph2 + seed * 5) & 1023] * 1.2;
-                let dx = st[(angIdx + 256) & 1023] * dist;
-                let dy = st[angIdx] * dist * 0.35;
-                ctx.fillRect(sx + dx - size / 2, dustBaseY + dy - size / 2, size, size);
+            let glDust = typeof GLU !== 'undefined' && GLU.isEnabled();
+            if (glDust) {
+                for (let i = 0; i < 4; i++) {
+                    let seed = (seedBase + i * 257) & 1023;
+                    let angIdx = (ph + seed) & 1023;
+                    let dist = r * 0.6 + st[(ph2 / 2 + seed * 3) & 1023] * r * 0.55;
+                    let size = 2.2 + st[(ph2 + seed * 5) & 1023] * 1.2;
+                    let dx = st[(angIdx + 256) & 1023] * dist;
+                    let dy = st[angIdx] * dist * 0.35;
+                    GLU.pushDust(sx + dx, dustBaseY + dy, size * 1.6, 0.45, 205 / 255, 190 / 255, 160 / 255);
+                }
+            } else {
+                ctx.fillStyle = 'rgba(205,190,160,0.45)';
+                for (let i = 0; i < 4; i++) {
+                    let seed = (seedBase + i * 257) & 1023;
+                    let angIdx = (ph + seed) & 1023;
+                    let dist = r * 0.6 + st[(ph2 / 2 + seed * 3) & 1023] * r * 0.55;
+                    let size = 2.2 + st[(ph2 + seed * 5) & 1023] * 1.2;
+                    let dx = st[(angIdx + 256) & 1023] * dist;
+                    let dy = st[angIdx] * dist * 0.35;
+                    ctx.fillRect(sx + dx - size / 2, dustBaseY + dy - size / 2, size, size);
+                }
             }
         }
 
@@ -694,7 +717,7 @@ function drawDivisions() {
             let ph = (performance.now() / 160) & 255;
             for (let i = 0; i < 3; i++) {
                 let off = ((ph + i * 60) % 160) / 160;
-                let px = sx - (div.moveDx > 0 ? 1 : -1) * off * imgSize * 1.1;
+                let px = sx - off * imgSize * 1.1;
                 let py = sy - imgSize * 0.35 - off * imgSize * 0.5;
                 ctx.fillStyle = "rgba(220,220,220," + (0.35 * (1 - off)) + ")";
                 ctx.beginPath(); ctx.arc(px, py, 2 + (1 - off) * 2.5, 0, Math.PI * 2); ctx.fill();
@@ -715,13 +738,12 @@ function drawDivisions() {
             ctx.fillText("🛡️", sx, sy - r - (div.formation === 'line' ? 20 : 8));
         }
 
-        // === 断粮警告 🚫🌾（仅己方部队显示，避免泄露敌方补给情报；数字=剩余口粮天数，归零后每天减员） ===
-        if (div.country === G.playerCountry && div.supplyStatus === 'starve') {
+        // === 断粮警告 🚫🌾（仅己方部队显示，避免泄露敌方补给情报；只在口粮归零时显示禁止符号） ===
+        if (div.country === G.playerCountry && div.supplyStatus === 'starve' && (div.rations || 0) <= 0) {
             ctx.font = "11px sans-serif";
             ctx.textAlign = "center";
             ctx.fillStyle = "rgba(255,90,70,0.95)";
-            let _rat = Math.max(0, Math.floor(div.rations === undefined ? 0 : div.rations));
-            ctx.fillText("🚫🌾" + _rat, sx, sy - r - 22);
+            ctx.fillText("🚫🌾", sx, sy - r - 22);
         }
 
         // Show focus target indicator
@@ -963,9 +985,11 @@ function drawDivisions() {
     ctx.save();
     if (G.moveLines) {
         let now = Date.now();
-        G.moveLines = G.moveLines.filter(line => {
+        G.moveLines = G.moveLines.filter(line => (now - line.startTime) <= 3000); // fade out after 3s
+        // 同时最多渲染 50 条移动绿线（只画最新 50 条，多了不渲染）
+        let vis = G.moveLines.length > 50 ? G.moveLines.slice(-50) : G.moveLines;
+        for (let line of vis) {
             let elapsed = now - line.startTime;
-            if (elapsed > 3000) return false; // fade out after 3s
             let [sx, sy] = worldToScreen(line.fromX, line.fromY);
             let [ex, ey] = worldToScreen(line.toX, line.toY);
             let alpha = 1 - elapsed / 4000;
@@ -988,8 +1012,7 @@ function drawDivisions() {
             ctx.strokeStyle = `rgba(80,255,80,${0.8 * alpha})`;
             ctx.lineWidth = 2;
             ctx.stroke();
-            return true;
-        });
+        }
     }
     ctx.restore();
 
@@ -1202,7 +1225,20 @@ function drawActionBar() {
     if (G.selectedCity) {
         drawCityPanel();
     } else if (G.selectedDivisions.length === 0 && G.selectedCities && G.selectedCities.length > 0) {
-        // 框选多城市：同时选中单位时只显示单位
+        // 框选多城市：如果只有1个城市，转为单选城市面板
+        if (G.selectedCities.length === 1) {
+            let cid = G.selectedCities[0];
+            let cityData = G.cities[cid];
+            if (cityData) {
+                let city = CITIES.find(c => c.id === cid);
+                if (city) {
+                    G.selectedCity = { ...city, owner: cityData.owner, provinceId: cityData.provinceId };
+                    G.selectedCities = [];
+                    drawCityPanel();
+                    return;
+                }
+            }
+        }
         drawMultiCityPanel();
     }
     // 海军节点选中模式 — 类似城市的生产界面 + 属性详情
@@ -1417,9 +1453,9 @@ function drawCityPanel() {
         ly += 18;
         ctx.textAlign = "left";
         ctx.font = "12px Georgia,serif";
-        let gpm = cityData.grainPerMonth !== undefined ? cityData.grainPerMonth : 15;
-        let gmax = cityData.grainMax !== undefined ? cityData.grainMax : 150;
-        let upgTxt = cityData.grainUpgraded ? " ✅" : (cityData.grainUpgradeProgress > 0 ? " → 30（升级中）" : "");
+        let gpm = cityData.grainPerMonth !== undefined ? cityData.grainPerMonth : 60;
+        let gmax = cityData.grainMax !== undefined ? cityData.grainMax : 500;
+        let upgTxt = cityData.grainUpgraded ? " ✅" : (cityData.grainUpgradeProgress > 0 ? " → 120（升级中）" : "");
         ctx.fillStyle = "#d4b860";
         ctx.fillText("🌾 粮食: " + Math.floor(cityData.grain || 0) + " / " + gmax, x + 12, ly);
         ctx.fillStyle = "#a8d868";
@@ -1432,7 +1468,7 @@ function drawCityPanel() {
         if (!isMajorCity(city.id) && !city.isCapital && cityData.cityType === 'small') {
             if (cityData.grainUpgraded) {
                 ctx.fillStyle = "#a8d868";
-                ctx.fillText("已升级 ✅（月产 30）", x + 12, ly);
+                ctx.fillText("已升级 ✅（月产 120）", x + 12, ly);
                 ly += 20;
             } else if (cityData.grainUpgradeProgress > 0) {
                 let remain = Math.ceil(cityData.grainUpgradeProgress);
@@ -2041,6 +2077,8 @@ function drawCountrySidebar() {
     CT.drawPanel(ctx, x, y, w, h, { accentColor: COUNTRY_COLORS[co] || "#888" });
     // Store sidebar bounds for click interception
     G._sidebarBounds = { x, y, w, h };
+    // 供 WebGL 单位层挖洞使用（面板区域不画单位）
+    window._countrySidebarRect = { x: x, y: y, w: w, h: h };
 
     // 国旗
     drawCountryFlag(co, x + 12, y + 8, 50, 30);
@@ -3158,16 +3196,16 @@ function drawSelectedUnitSidebar() {
     if (selDivs.length === 1) {
         let d = selDivs[0];
         let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
-        // 缺粮（断粮）状态：全属性 -40%
-        let starvePen = d.supplyStatus === 'starve';
-        let sMult = starvePen ? 0.6 : 1;
+        // 缺粮/断粮状态：全属性倍率（断粮 -40%，短缺 -15%）
+        let sMult = (typeof grainMultFor === 'function') ? grainMultFor(d) : 1;
+        let starvePen = sMult < 1;
         // 海军舰船：使用计算后的属性（含品级加成）
         let range = (d.navyRng !== undefined ? d.navyRng : ut.range) * sMult;
         let speed = (d.navySpd !== undefined ? d.navySpd : ut.speed) * sMult;
         let dmg = (d.navyDmg !== undefined ? d.navyDmg : ut.damage) * sMult;
         let fr = (d.navyFr !== undefined ? d.navyFr : ut.fireRate) / sMult;
         let realMaxHp = d.maxStrength !== undefined ? d.maxStrength : ut.maxStr;
-        let maxHp = Math.round(realMaxHp * sMult);
+        let maxHp = Math.round(realMaxHp);
 
         let subNote = "";
         let speedNote = "";
@@ -3240,7 +3278,7 @@ function drawSelectedUnitSidebar() {
         } else if (d.supplyStatus === 'starve' && (d.rations || 0) <= 0) {
             ctx.fillStyle = "#e05040";
             ctx.font = "11px Georgia,serif";
-            ctx.fillText("-5", hpBarX + hpBarW + 6, ly + 5);
+            ctx.fillText("断粮", hpBarX + hpBarW + 6, ly + 5);
             ctx.font = "14px Georgia,serif";
         }
         ly += 10;
@@ -3320,13 +3358,15 @@ function drawSelectedUnitSidebar() {
             let _rmax = (typeof rationsMaxFor === 'function') ? rationsMaxFor(d) : (typeof GRAIN_RATIONS_MAX !== 'undefined' ? GRAIN_RATIONS_MAX : 30);
             ctx.fillText("口粮(天): " + Math.max(0, Math.floor(d.rations === undefined ? _rmax : d.rations)) + " / " + _rmax, x + 12, ly);
             ly += LINE_H;
-            // 缺粮负收益 + 每日损耗
-            if (d.supplyStatus === 'starve') {
+            // 断粮负面收益（仅口粮归零时；短缺无惩罚，不显示）
+            if (starvePen) {
+                let _pct = Math.round((1 - sMult) * 100);
+                let _spdPct = d.supplyStatus === 'starve'
+                    ? Math.round((1 - ((typeof GRAIN_STARVE !== 'undefined' && GRAIN_STARVE.speed) || 0.6)) * 100)
+                    : Math.round((1 - ((typeof GRAIN_LOW !== 'undefined' && GRAIN_LOW.speed) || 0.8)) * 100);
                 ctx.fillStyle = "#e05040";
                 ctx.font = "13px Georgia,serif";
-                ctx.fillText("⚠️ 缺粮惩罚: 伤害-40% 射程-40% 射速-40% 移速-40% 血量-40%", x + 12, ly);
-                ly += LINE_H;
-                ctx.fillText("☠️ 口粮耗尽: 每天扣 5 点兵力", x + 12, ly);
+                ctx.fillText("⚠️ 缺粮惩罚: 攻伤-" + _pct + "% 射程-" + _pct + "% 射速-" + _pct + "% 移速-" + _spdPct + "%", x + 12, ly);
                 ly += LINE_H;
                 ctx.font = "14px Georgia,serif";
             }
@@ -3753,6 +3793,12 @@ const LEFT_TAB_W = 34, LEFT_TAB_H = 72, LEFT_PANEL_W = 310;
 
 function drawLeftSidebar() {
     if (!G.playerCountry) return;
+    // 供 WebGL 单位层挖洞使用（左栏 tab + 展开面板区域不画单位）
+    window._leftSidebarRect = {
+        x: 0, y: TOP_BAR_HEIGHT,
+        w: LEFT_TAB_W + (G.leftPanel ? LEFT_PANEL_W + 4 : 0),
+        h: canvas.height - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT
+    };
     let tabX = 0;
     let tabStartY = TOP_BAR_HEIGHT + 4;
     let availableH = canvas.height - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT - 8;

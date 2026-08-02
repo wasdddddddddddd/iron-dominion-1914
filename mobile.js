@@ -3,36 +3,38 @@
     var isTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
     if (!isTouch) return; // PC 端跳过
 
-    // ===== 双指缩放 =====
+    // ===== 三指缩放 =====
     var lastPinchDist = 0;
     var pinchCenter = null;
 
     canvas.addEventListener('touchstart', function(e) {
-        if (e.touches.length === 2) {
+        if (e.touches.length === 3) {
             lastPinchDist = Math.hypot(
-                e.touches[0].clientX - e.touches[1].clientX,
-                e.touches[0].clientY - e.touches[1].clientY
+                (e.touches[0].clientX + e.touches[1].clientX) / 2 - e.touches[2].clientX,
+                (e.touches[0].clientY + e.touches[1].clientY) / 2 - e.touches[2].clientY
             );
             pinchCenter = {
-                x: (e.touches[0].clientX + e.touches[1].clientX) / 2,
-                y: (e.touches[0].clientY + e.touches[1].clientY) / 2
+                x: (e.touches[0].clientX + e.touches[1].clientX + e.touches[2].clientX) / 3,
+                y: (e.touches[0].clientY + e.touches[1].clientY + e.touches[2].clientY) / 3
             };
         }
     }, { passive: false });
 
     canvas.addEventListener('touchmove', function(e) {
-        if (e.touches.length === 2 && lastPinchDist > 0) {
+        if (e.touches.length === 3 && lastPinchDist > 0) {
             e.preventDefault();
-            var dist = Math.hypot(
-                e.touches[0].clientX - e.touches[1].clientX,
-                e.touches[0].clientY - e.touches[1].clientY
-            );
-            var delta = (lastPinchDist - dist) * 2;
-            lastPinchDist = dist;
+            // 用三指形成的三角形平均边长变化来衡量缩放
+            var d01 = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
+            var d12 = Math.hypot(e.touches[1].clientX - e.touches[2].clientX, e.touches[1].clientY - e.touches[2].clientY);
+            var d20 = Math.hypot(e.touches[2].clientX - e.touches[0].clientX, e.touches[2].clientY - e.touches[0].clientY);
+            var avgDist = (d01 + d12 + d20) / 3;
+            var delta = (lastPinchDist - avgDist) * 2;
+            lastPinchDist = avgDist;
 
-            var r = canvas.getBoundingClientRect();
-            var sx = pinchCenter.x - r.left;
-            var sy = pinchCenter.y - r.top;
+            pinchCenter = {
+                x: (e.touches[0].clientX + e.touches[1].clientX + e.touches[2].clientX) / 3,
+                y: (e.touches[0].clientY + e.touches[1].clientY + e.touches[2].clientY) / 3
+            };
 
             canvas.dispatchEvent(new WheelEvent('wheel', {
                 deltaX: 0, deltaY: delta, deltaZ: 0,
@@ -43,7 +45,7 @@
     }, { passive: false });
 
     canvas.addEventListener('touchend', function(e) {
-        if (e.touches.length < 2) {
+        if (e.touches.length < 3) {
             lastPinchDist = 0;
             pinchCenter = null;
         }

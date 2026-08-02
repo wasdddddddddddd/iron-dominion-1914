@@ -21,10 +21,10 @@ const ARTILLERY_MOUNTAIN_RANGE_BONUS=0.2;
 const KM_PER_DEG=111; // 1° 纬度 ≈ 111 km
 // 城市粮食参数（cityType → 月产粮/储存上限/补给半径km/补给圈颜色）
 const GRAIN_CITY_CFG={
-    capital:{ grainPerMonth:40, grainMax:800, supplyRadius:200, color:'#4a90d9' }, // 蓝
-    major:  { grainPerMonth:30, grainMax:400, supplyRadius:120, color:'#6ab06a' }, // 绿
-    agri:   { grainPerMonth:60, grainMax:300, supplyRadius:80,  color:'#e8a040' }, // 橙
-    small:  { grainPerMonth:15, grainMax:150, supplyRadius:50,  color:'#9aa0a8' }, // 灰
+    capital:{ grainPerMonth:80, grainMax:800, supplyRadius:200, color:'#4a90d9' }, // 蓝（产粮 ×2）
+    major:  { grainPerMonth:60, grainMax:1200, supplyRadius:120, color:'#6ab06a' }, // 绿（产粮 ×2，储备 1200）
+    agri:   { grainPerMonth:120, grainMax:300, supplyRadius:80,  color:'#e8a040' }, // 橙（产粮 ×2）
+    small:  { grainPerMonth:60, grainMax:500, supplyRadius:50,  color:'#9aa0a8' }, // 灰（基础月产 60，翻倍后 120；储备 500）
 };
 // 部队月耗粮（海军/潜艇海上补给走海军节点，不消耗城市粮食）
 const UNIT_GRAIN_PER_MONTH={ infantry:30, engineer:30, cavalry:50, artillery:40, mountain:30, airplane:20 };
@@ -33,20 +33,26 @@ const GRAIN_UPGRADE_COST=100, GRAIN_UPGRADE_DAYS=30;
 // 农业城市列表（黑土平原产粮区，如基辅、匈牙利平原）
 const AGRICULTURAL_CITY_IDS=['kiev','odessa','budapest','kassa','brasso'];
 // 部队口粮上限（天）
-const GRAIN_RATIONS_MAX=30;
+const GRAIN_RATIONS_MAX=50;
 // 口粮渐进恢复量（天/游戏天）：补给圈内缓慢恢复，不瞬间补满
 const GRAIN_RATIONS_RECOVER_DAY=5;
-// 断粮惩罚：移速倍率(与全属性-40%一致) / 口粮耗尽后每天固定扣兵力点
-const GRAIN_STARVE={speed:0.6, attritionPerDay:5};
-// 短缺惩罚：移速倍率
-const GRAIN_LOW={speed:0.8};
+// 断粮惩罚：移速倍率 / 全属性(攻伤/射程/射速)倍率（mult） / 口粮耗尽后每天固定扣兵力点（已取消扣血，attritionPerDay 保留0禁用）
+const GRAIN_STARVE={speed:0.6, mult:0.6, attritionPerDay:0};
+// 短缺：仅口粮持续消耗，无任何负面效果（负面效果只在口粮归零转入断粮后才生效）
+const GRAIN_LOW={speed:1, mult:1};
+// 统一缺粮属性倍率（战斗计算与面板显示共用，保证实时一致）：只有口粮归零（starve）才有惩罚
+function grainMultFor(d) {
+    let st = d && d.supplyStatus;
+    if (st === 'starve') return (typeof GRAIN_STARVE !== 'undefined' && GRAIN_STARVE.mult) || 0.6;
+    return 1;
+}
 // ===== 铁路运兵系统 =====
 // 运兵速度倍率：平原铁路段 ×5；穿过山地的铁路段 ×2.5（山地是"慢速走廊"，不被铁路架空）
 const RAIL_SPEED_MULT=5, RAIL_MOUNTAIN_MULT=2.5;
 // 步行接驳：部队距离起点站小于该值（度）视为"已进站"（上车/下车判定）
 const RAIL_STATION_RADIUS=0.02;
-// 铁路运兵费用（金币/每支部队，按兵种）
-const RAIL_TRIP_COST={ infantry:20, engineer:25, cavalry:30, mountain:25, artillery:40 };
+// 铁路运兵费用（金币/每支部队，按兵种；票价减半）
+const RAIL_TRIP_COST={ infantry:10, engineer:12.5, cavalry:15, mountain:12.5, artillery:20 };
 const MAP_CENTER_LON=10,MAP_CENTER_LAT=50;
 const OCEAN_COLOR_TOP="#1a2a3a",OCEAN_COLOR_BOTTOM="#1a2535";
 const COUNTRY_COLORS = {"ALBANIA":"#E05555","TURKEY":"#5B9E6B","AUSTRIA_HUNGARY":"#E8D18C","BULGARIA":"#3CB88B","BELGIUM":"#8BB8D8","DENMARK":"#D44040","GERMANY":"#6B8FA0","RUSSIA":"#4A8C3F","FRANCE":"#3B6FD4","FINLAND":"#8BB5D0","NETHERLANDS":"#FF6B35","MONTENEGRO":"#E05555","LUXEMBOURG":"#5BBFD4","ROMANIA":"#D4C56B","NORWAY":"#5B8FBF","PORTUGAL":"#5B9E4B","SWEDEN":"#4A7FB5","SWITZERLAND":"#E63946","SERBIA":"#D44B4B","SPAIN":"#D4A843","GREECE":"#5B8FBF","ITALY":"#3CB043","UK":"#D4343E"};

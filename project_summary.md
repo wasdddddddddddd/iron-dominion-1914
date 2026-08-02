@@ -422,3 +422,52 @@ js/command/
 - **单兵详情加成显示**：伤害/生命/移速行内绿色 `+N`（含全部加成合计）+ 金色汇总两行叠加——`🎖️ 集团军名加成: 攻击+X% …` 与 `🎖️ 总司令光环(姓名): 血量+X%`（`getBonusBreakdown` 拆分来源）；无集团军时仅光环行
 - 顶部状态栏**不显示**总司令信息（仅显示国家/经济/军队/外交点数/日期速度）；总司令姓名与光环只在国别侧栏展示
 - 弹窗：编成/更换共用指挥官列表（含滚动条），解散需确认
+
+## 最近更新（2026-08-02）
+
+### 铁路运兵系统（git f7fff58）
+- **铁路网络**：`G.railways{}` 存铁路段（key 为 `城市A|城市B` 排序拼接）；段可用条件 = 两端城市归属己方/同盟/有军事通行权（`railwayUsable`）；被摧毁/易主的段不可用
+- **运兵流程**：选中陆军（排除海军/飞机）→ 铁路弹窗选目的站 → 部队先**步行接驳**（省份寻路避免穿越敌境，`stage:'walk_to_station'`）→ 到达起点站上车（`railwayPath` BFS 算路径，`stage:'on_train'`）→ 沿段快速移动（速度 = 兵种速度 ×2.5×`railSegmentMult`，山地段 `RAIL_MOUNTAIN_MULT=2.5`、平地段 `RAIL_SPEED_MULT=5`）→ 到站下车转 idle
+- **各自就近上车**：`fromCityId` 为 null 时每队独立找最近可用车站（`railNearestStation`）；参考站决定可达列表（`railwayReachableCities` BFS）
+- **运费**：`RAIL_TRIP_COST`（步20/工25/骑30/山25/炮40/队），总价一次扣除，不足不发车
+- **乘车限制**：乘车中不可开火（fireUnits/auto-target 跳过 on_train）；铁路被切断立即下车（`cancelRailTrip`）；右键/点击移动命令取消运兵
+- **弹窗**：drawRailModal 显示目的站列表（里程/ETA/⛰山地段数/他国归属），列表超 12 行滚轮滚动（`m.scroll` + `window._railModalMaxScroll`）
+- **山地铁路标记**：铁路段跨山地省份时绿色 ⛰ 标记（`railwayIsMountain` + `ensureRailMtnCache`）
+- 铁路日志：上车/到站/中断/取消均有 🚂 日志
+
+### 性能优化：WebGL 单位渲染（GLU，`js/gl_units.js`，方案B混合渲染）
+- **架构**：`gameGL` canvas（z-index:2、pointer-events:none）叠加在主 canvas 上；**仅世界层单位/扬尘走 WebGL**，UI/文本/面板仍 Canvas 2D
+- **图集**：2048×2048、NEAREST；单位贴图降采样上限 96px（原图最大 1920×1920）；扬尘径向渐变图为 0 号槽；`texImage2D` try/catch，失败（file:// 打开导致 Tainted canvases）→ 禁用 GLU 并 toast 提示用 `node server/server.js` → http://localhost:1914
+- **绘制**：instanced 顶点扩展（stride 32：corner/uv/alpha/color），每帧单次 `drawArrays` 画全部单位；朝左翻转 UV；预乘 alpha `blendFunc(ONE, ONE_MINUS_SRC_ALPHA)`，FS 输出 `vec4(c.rgb*color*c.a*vAlpha, c.a*vAlpha)`
+- **UI 挖洞**：fragment shader discard 最多 8 个 UI 矩形（y 翻转 `H-r[1]-r[3]`）：顶栏/底栏/左右侧栏/国家侧栏/铁路弹窗/指令弹窗/指挥快捷栏（render() 末尾 `GLU.flush(rects.slice(0,8))`）
+- **对象池**：预分配 `unitPool` 16384 对象 + `unitN` 计数器（消除每帧 GC）；`MAX_UNITS=16384`，verts `Float32Array(MAX_UNITS*6*8)`
+- 集成：drawDivisions 先 GL 后 2D 回退；`resizeCanvas` 同步 `GLU.resize()`；index.html 4 个脚本 `?v=40`
+
+### 渲染静态缓存（game_ui.js render()）
+- **三层离屏缓存**：省份填充、海岸网格、边界+河流+山地三层，均按 `panKey = Math.round(camX*zoom*PPD/8)+','+Math.round(camY*zoom*PPD/8)+','+shapeKey` **8px 量化重建**（拖动中内容与相机同步，消除每帧全量重绘的周期性卡顿）
+- `shapeKey = Math.round(zoom*100)+','+w+','+h`（缩放/尺寸变化也触发重建）
+- **注意**：所有静态层依赖 `worldToScreen`（相机偏移），必须随 pan 重建——曾只把省份层排除在重建外导致 pan 时版图错位（已修复，见下）
+
+### 缺粮系统改造
+- **取消断粮扣血**：`GRAIN_STARVE={speed:0.6, mult:0.6, attritionPerDay:0}`（原每次 `/5` 血循环扣血已移除）
+- **负面效果只在口粮归零时才生效**：离开补给半径/城市粮仓见底 → `supplyStatus='low'`（短缺）：口粮照常按天消耗（`rations = max(0, rations-days)`），**无任何负面效果**（`GRAIN_LOW={speed:1, mult:1}`）；口粮耗尽归零 → `supplyStatus='starve'`（断粮）才施加负面效果
+- **统一函数**：config.js `grainMultFor(d)` = starve 0.6 / 其他 1；fireUnits 伤害与射速、moveUnits 速度统一走该函数
+- **头顶标记**：🚫🌾 仅当 `starve && rations<=0`（口粮归零）时显示（原 starve 即显示+口粮数字）
+- **面板显示**：详情面板断粮惩罚行（⚠️ 攻伤/射程/射速/移速 -%）仅 starve 时显示；状态文字 starve→"断粮"、low→"短缺"；血条右侧 "断粮" 标签条件不变
+
+### 海军目标限制
+- `isSeaType(type)` = navy|submarine（game_core.js:117）
+- **海军/潜艇不能攻击陆军与空军**：fireUnits focusTarget 若为非海目标则清除；两处 auto-target 桶跳过 `isSeaType(d) && !isSeaType(e)`；仍可攻击沿岸城市/工厂/海军节点
+
+### 本次会话修复
+- **铁路弹窗滚轮失效**：wheel handler 读 `G._railModalMaxScroll` 而写入处是 `window._railModalMaxScroll`，命名空间不一致 → 恒为 0 滚不动；统一读 `window._railModalMaxScroll`
+- **index.html 中文乱码**：title/加载/国家选择界面文本实际是 UTF-8 编码的 GBK mojibake（`閾佷笌鏉冩焺锟?914` 等，行 6/152/161/162/166/168）；PowerShell 替换因 `�` 字符过命令行损坏而失败，改用 node 脚本文件按字节特征修复 → `铁与权柄：1914 · 省份地图`、`✦ 选择你的国家 ✦`、`点击选择国家 · 长按或右键查看详情`、`⚔️ 联机模式`
+- **pan 时版图错位**：省份层曾排除在 panKey 重建外（只在 zoom 变时重建）且 blit 固定 0,0 → 拖动视角时色块不跟手；修复：三层统一纳入 8px 量化 panKey 重建
+
+### 已知问题 / 待办
+- **（已修复）单位上车后不能移动**：根因 = ai_pathfinding.js:634 用同名函数**覆盖了 game_core.js 的 moveUnits**，railTrip 分支从未执行；且碰撞箱推挤把铁路单位推出车站导致永远到不了站。修复：抽 `moveRailUnit(d, days)`（game_core.js，步行接驳+乘车+省界检查+到达上车），两版 moveUnits 均委托它。headless 验证：步行 430 帧上车 → 1092 帧抵达汉堡下车 ✓
+- **碰撞箱规则**：普通单位与步行接驳（walk_to_station）单位照常受碰撞推挤（6c4 单位分离 + 6c5 建筑分离）；**乘车中（on_train）单位完全不受推挤**；步行单位的目标车站不做 6c5 推挤（否则永远到不了站）；moveRailUnit 进站判定半径 0.04°（大于推挤作用范围 0.037°，被推挤单位进圈即上车）
+- `images/terrain/terrain_land.png` 缺失 → game_panels.js:153 良性警告（地形底图不显示，省份色块正常）
+- git：origin/main=f7fff58（force-push 覆盖旧 9c00c90），旧远端存 `backup-pre-webgl` 分支；本地未跟踪 `-w` 文件、`exportImage.tiff` 状态残留；本次修复（乱码/滚轮/pan/缺粮/铁路）尚未提交
+- 本地运行：`node server/server.js` → http://localhost:1914（WebGL 加速需 http 访问，file:// 自动回退 2D）
+- 注意：工作区文件可能在会话中受外部编辑器修改（如 ai_pathfinding.js 6c5 段），提交前先 `git diff` 审查

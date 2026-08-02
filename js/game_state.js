@@ -905,7 +905,8 @@ function findCityAtScreen(sx, sy) {
         'durres',
         'luxembourg',
     ]);
-    let best = null, bestDist = 25;
+    let best = null, bestDist = Infinity;
+    let bEffZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
     for (let city of CITIES) {
         let [cx, cy] = worldToScreen(city.lon, city.lat);
         // 视野外不可点击
@@ -914,8 +915,11 @@ function findCityAtScreen(sx, sy) {
         if (city.isCapital && zoom <= capitalZoom) continue;
         if (!city.isCapital && !majorCities.has(city.id) && !isMajorCity(city.id) && zoom <= minorZoom) continue;
         if (!city.isCapital && (majorCities.has(city.id) || isMajorCity(city.id)) && zoom <= majorZoom) continue;
+        // 点击圈 = 选中圈 = 碰撞箱：首都 2.5*effZoom，大城市 4.5*effZoom，小城市 2.5*effZoom
+        let isMajor = majorCities.has(city.id) || isMajorCity(city.id);
+        let selR = city.isCapital ? 2.5 * bEffZoom : (isMajor ? 4.5 * bEffZoom : 2.5 * bEffZoom);
         let dist = Math.hypot(sx - cx, sy - cy);
-        if (dist < bestDist) { best = city; bestDist = dist; }
+        if (dist < selR && dist < bestDist) { best = city; bestDist = dist; }
     }
     return best;
 }

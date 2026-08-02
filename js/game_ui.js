@@ -11,6 +11,7 @@ let mouseX = 0, mouseY = 0;
 function resizeCanvas() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
+    if (typeof GLU !== 'undefined' && GLU.isEnabled()) GLU.resize();
 }
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
@@ -545,7 +546,7 @@ function drawCities() {
         ctx.save();
         // 战术层以下建筑大小固定（不随视野拉远缩小），战术层以上随缩放
         let bEffZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
-        let bImgSize = city.isCapital ? (10 * bEffZoom * 3) : ((isMajor ? 5 : 6.75) * bEffZoom * 2);
+        let bImgSize = city.isCapital ? (5 * bEffZoom * 3) : ((isMajor ? 5 : 6.75) * bEffZoom * 2);
         let bCenterY = sy - 10;
         // 脚底阴影（首都除外）
         if (!city.isCapital) {
@@ -569,11 +570,11 @@ function drawCities() {
             ctx.shadowBlur = 0;
         }
 
-        // 选中光圈（单选或框选城市），随建筑等比缩放
+        // 选中光圈（单选或框选城市），选中圈=碰撞箱
         let isSelCity = (G.selectedCity && G.selectedCity.id === city.id) ||
                         (G.selectedCities && G.selectedCities.indexOf(city.id) >= 0);
         if (isSelCity) {
-            let selR = bImgSize * 0.55;
+            let selR = city.isCapital ? 2.5 * bEffZoom : (isMajor ? 4.5 * bEffZoom : 2.5 * bEffZoom);
             ctx.beginPath(); ctx.arc(sx, sy - 10, selR, 0, Math.PI * 2);
             ctx.fillStyle = "rgba(200,168,48,0.10)";
             ctx.fill();
@@ -1185,6 +1186,30 @@ function drawRailButton() {
     ctx.restore();
 }
 
+// ===== 城市视图按钮（右下角，铁路按钮上方） =====
+function drawCityViewButton() {
+    let isActive = !!G.cityViewMode;
+    let btnW = 44, btnH = 28;
+    let btnX = canvas.width - btnW - 8, btnY = canvas.height - BOTTOM_BAR_HEIGHT - 146;
+    ctx.save();
+    ctx.fillStyle = isActive ? "rgba(80,180,200,0.35)" : "rgba(22,16,10,0.85)";
+    CT.roundRectPath(ctx, btnX, btnY, btnW, btnH, 4);
+    ctx.fill();
+    ctx.strokeStyle = isActive ? "rgba(80,180,200,0.7)" : "rgba(180,140,80,0.3)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.font = "14px sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillStyle = isActive ? "#88c8e0" : "#d4c0a0";
+    ctx.fillText("🏙️", btnX + btnW/2, btnY + btnH/2);
+    if (isActive) {
+        ctx.fillStyle = "rgba(80,180,200,0.3)";
+        ctx.fillRect(btnX, btnY + btnH - 2, btnW, 2);
+    }
+    window._cityViewBtnRect = { x: btnX, y: btnY, w: btnW, h: btnH };
+    ctx.restore();
+}
+
 function drawGravestones() {
     if (!G.gravestones || G.gravestones.length === 0) return;
     let now = G.date.getTime();
@@ -1328,22 +1353,36 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     }
 
     // ===== Offscreen cache for static geometry =====
-    let viewKey = camX.toFixed(3) + ',' + camY.toFixed(3) + ',' + zoom.toFixed(5) + ',' + w + ',' + h;
-    let needCache = window._staticViewKey !== viewKey || !window._coastCache;
+    // 三层静态内容都依赖 worldToScreen（相机偏移），必须与相机同步：
+    // panKey 按 8px 量化重建，拖动中仅小幅步进，消除每帧全量重绘的周期性卡顿
+    let shapeKey = Math.round(zoom * 100) + ',' + w + ',' + h;
+    let panKey = Math.round(camX * zoom * PIXELS_PER_DEGREE / 8) + ',' + Math.round(camY * zoom * PIXELS_PER_DEGREE / 8) + ',' + shapeKey;
+    let needCache = window._staticViewKey !== panKey || !window._provinceCache;
     if (needCache && typeof PROVINCES !== 'undefined') {
-        // Coast grid cache (drawn before province fills)
+        // Province fills (blit first, under borders)
+        if (!window._provinceCache || window._provinceCache.width !== w || window._provinceCache.height !== h) {
+            let c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            window._provinceCache = c;
+        }
+        let pc = window._provinceCache.getContext('2d');
+        let sc = ctx;
+        ctx = pc; pc.clearRect(0, 0, w, h);
+        drawProvinces();
+        ctx = sc;
+
+        // Coast grid cache (blit between province fills and borders)
         if (!window._coastCache || window._coastCache.width !== w || window._coastCache.height !== h) {
             let c = document.createElement('canvas');
             c.width = w; c.height = h;
             window._coastCache = c;
         }
         let cc = window._coastCache.getContext('2d');
-        let sc = ctx;
         ctx = cc; cc.clearRect(0, 0, w, h);
         drawCoastGrid();
         ctx = sc;
 
-        // Borders + rivers + 山地三层 cache (drawn after province fills)
+        // Borders + rivers + 山地三层 cache (blit last, on top)
         if (!window._borderCache || window._borderCache.width !== w || window._borderCache.height !== h) {
             let c = document.createElement('canvas');
             c.width = w; c.height = h;
@@ -1353,19 +1392,14 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
         ctx = bc; bc.clearRect(0, 0, w, h);
         drawRivers();
         drawBorders();
-        // 山地三层并入静态缓存：避免每帧 3 次 3080×1560 大图缩放
         drawTerrainMountainLayers();
         ctx = sc;
 
-        window._staticViewKey = viewKey;
+        window._staticViewKey = panKey;
     }
     if (window._coastCache) ctx.drawImage(window._coastCache, 0, 0);
-
-    // Draw provinces directly (native canvas handles ~200 polygons at 60fps)
-    drawProvinces();
-
-    // Blit borders + rivers + 山地 cache on top of province fills
-    ctx.drawImage(window._borderCache, 0, 0);
+    if (window._provinceCache) ctx.drawImage(window._provinceCache, 0, 0);
+    if (window._borderCache) ctx.drawImage(window._borderCache, 0, 0);
     drawRailways();
     drawGravestones();
     drawNavyGraves();
@@ -1439,50 +1473,78 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
     drawFactoryToggle();
     drawSupplyButton();
     drawRailButton();
+    drawCityViewButton();
+    // ===== WebGL 单位层：在全部 2D 绘制之后 flush（GL canvas 叠在最上层，面板区域用 discard 挖洞） =====
+    if (typeof GLU !== 'undefined' && GLU.isEnabled()) {
+        let rects = [];
+        rects.push([0, 0, w, TOP_BAR_HEIGHT]);
+        rects.push([0, h - BOTTOM_BAR_HEIGHT, w, BOTTOM_BAR_HEIGHT]);
+        let sp = window._sidePanelRect;
+        if (sp && sp.x !== undefined) rects.push([sp.x, sp.y, sp.w, sp.h]);
+        let cs = window._countrySidebarRect;
+        if (cs && cs.x !== undefined) rects.push([cs.x, cs.y, cs.w, cs.h]);
+        let rm = window._railModalRect;
+        if (rm && rm.x !== undefined) rects.push([rm.x, rm.y, rm.w, rm.h]);
+        let cm = window._cmdModalRect;
+        if (cm && cm.x !== undefined) rects.push([cm.x, cm.y, cm.w, cm.h]);
+        let cb = window._cmdBarRect;
+        if (cb && cb.x !== undefined) rects.push([cb.x, cb.y, cb.w, cb.h]);
+        let ls = window._leftSidebarRect;
+        if (ls && ls.x !== undefined) rects.push([ls.x, ls.y, ls.w, ls.h]);
+        GLU.flush(rects.slice(0, 8));
+    }
 } catch(e) { console.error(e); }
 }
 
 // ===== 补给视图：己方城市补给圈（按类型着色，重叠加深）+ 城市名(X个师) =====
+// LOD 分级：小城市任何缩放都画淡虚线（不再被跳过）；填充/标签只在放大后出现，避免大城市圈糊成一片
 function drawSupplyView() {
     if (!G.supplyView || !G.cities || !G.playerCountry) return;
     ctx.save();
     let kmPerDeg = (typeof KM_PER_DEG !== 'undefined') ? KM_PER_DEG : 111;
+    // 缩放淡出系数：最小缩放 0.35 倍淡，zoom≈0.78 起全亮
+    let faint = 0.35 + 0.65 * Math.min(1, Math.max(0, (zoom - MIN_ZOOM) / 0.7));
+    let showFill = zoom > 0.6;   // 填充只在放大后画
+    let showLabel = zoom > 0.9;  // 标签只在局部视图画（避免“X个师”糊成一片）
     for (let cid in G.cities) {
         let c = G.cities[cid];
         if (!c || c.grainMax === undefined || c.owner !== G.playerCountry || c.hp <= 0) continue;
         let k = (typeof cityGrainCfgKey === 'function') ? cityGrainCfgKey(c) : 'small';
         let cfg = (typeof GRAIN_CITY_CFG !== 'undefined' && GRAIN_CITY_CFG[k]) ? GRAIN_CITY_CFG[k] : { color: '#9aa0a8' };
         let isSmall = k === 'small';
-        // 低缩放（战略层）只画大圈：首都/大城市/农业城市，小城市圈过密跳过
-        if (isSmall && zoom <= 0.35) continue;
+        let isCap = k === 'capital';
         let [sx, sy] = worldToScreen(c.lon, c.lat);
         if (sx < -400 || sx > canvas.width + 400 || sy < -400 || sy > canvas.height + 400) continue;
         let rDeg = (c.supplyRadius || 50) / kmPerDeg / Math.max(0.2, Math.cos(c.lat * Math.PI / 180));
         let [rx2, ry2] = worldToScreen(c.lon + rDeg, c.lat);
         let rPix = Math.abs(rx2 - sx);
+        let hexA = function (a) { return Math.round(a * 255).toString(16).padStart(2, '0'); };
+        ctx.beginPath(); ctx.arc(sx, sy, rPix, 0, Math.PI * 2);
         if (isSmall) {
-            // 小城市只画细虚线描边，不填充不标签（城市数量多，避免糊成一片）
-            ctx.beginPath(); ctx.arc(sx, sy, rPix, 0, Math.PI * 2);
-            ctx.strokeStyle = cfg.color + '55';
+            // 小城市：始终显示细虚线圈，无填充无标签；低缩放淡化
+            ctx.strokeStyle = cfg.color + hexA(0.22 * faint);
             ctx.lineWidth = 1;
             ctx.setLineDash([3, 4]);
             ctx.stroke(); ctx.setLineDash([]);
         } else {
-            ctx.beginPath(); ctx.arc(sx, sy, rPix, 0, Math.PI * 2);
-            ctx.fillStyle = cfg.color + '18';
-            ctx.fill();
-            ctx.strokeStyle = cfg.color + '88';
+            if (showFill) {
+                ctx.fillStyle = cfg.color + hexA(0.14 * faint);
+                ctx.fill();
+            }
+            ctx.strokeStyle = cfg.color + hexA((isCap ? 0.75 : 0.5) * faint);
             ctx.lineWidth = 1;
             ctx.setLineDash([6, 5]);
             ctx.stroke(); ctx.setLineDash([]);
-            let label = c.name + " (" + (c.suppliedDivs || 0) + "个师)";
-            ctx.font = "10px Georgia,serif";
-            ctx.textAlign = "center"; ctx.textBaseline = "middle";
-            let tw = ctx.measureText(label).width;
-            ctx.fillStyle = "rgba(10,12,18,0.75)";
-            ctx.fillRect(sx - tw/2 - 4, sy - 14, tw + 8, 14);
-            ctx.fillStyle = cfg.color;
-            ctx.fillText(label, sx, sy - 7);
+            if (showLabel) {
+                let label = c.name + " (" + (c.suppliedDivs || 0) + "个师)";
+                ctx.font = "10px Georgia,serif";
+                ctx.textAlign = "center"; ctx.textBaseline = "middle";
+                let tw = ctx.measureText(label).width;
+                ctx.fillStyle = "rgba(10,12,18,0.75)";
+                ctx.fillRect(sx - tw/2 - 4, sy - 14, tw + 8, 14);
+                ctx.fillStyle = cfg.color;
+                ctx.fillText(label, sx, sy - 7);
+            }
         }
     }
     ctx.restore();

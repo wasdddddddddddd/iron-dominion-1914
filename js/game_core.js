@@ -280,6 +280,143 @@ function cancelRailTrip(d, msg, quiet) {
         if (msg) addGameLog((d.name || "部队") + " " + msg);
     }
 }
+// 铁路运兵单位专用移动（moveUnits 的 game_core 版与 ai_pathfinding 版共用）：
+// walk_to_station = 步行接驳（含省界检查/路径跟随/到达上车）；on_train = 沿铁路段快速移动
+function moveRailUnit(d, days) {
+    if (!d.railTrip) return;
+    let effectiveDays = Math.max(Math.min(days, 0.04), 0);
+    let rt = d.railTrip;
+    if (rt.stage === 'on_train') {
+        let a = rt.path[rt.seg], b = rt.path[rt.seg + 1];
+        if (b === undefined) { cancelRailTrip(d, null, true); return; }
+        // 铁路被切断（城市易主/段被摧毁）→ 立即下车
+        if (!railwayUsable(a, b, d.country)) { cancelRailTrip(d, "铁路中断，已下车（" + d.name + "）"); return; }
+        let cB = G.cities[b];
+        let ut2 = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
+        let spd = ut2.speed * effectiveDays * 2.5 * railSegmentMult(a, b);
+        let dx = cB.lon - d.rx, dy = cB.lat - d.ry;
+        let dist = Math.hypot(dx, dy);
+        if (dist > spd) {
+            d.rx += dx / dist * spd; d.ry += dy / dist * spd;
+            d.moveDx = dx;
+            d.facing = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'e' : 'w') : (dy > 0 ? 's' : 'n');
+        } else {
+            d.rx = cB.lon; d.ry = cB.lat;
+            rt.seg++;
+            if (rt.seg >= rt.path.length - 1) {
+                let toName = G.cities[rt.to] ? G.cities[rt.to].name : "";
+                cancelRailTrip(d, null, true);
+                d.state = 'idle'; d.targetX = null; d.targetY = null; d.path = null;
+                addGameLog("🚂 " + (d.name || "部队") + " 乘火车抵达 " + toName + "，已下车");
+            } else {
+                d.targetX = cB.lon; d.targetY = cB.lat;
+            }
+        }
+        return;
+    }
+    if (rt.stage === 'walk_to_station') {
+        // 海洋封锁：陆军禁止下海（空军可飞越）
+        if (!isSeaType(d.type) && d.type !== 'airplane' && typeof isOceanPoint === 'function') {
+            if (isOceanPoint(d.rx, d.ry) || isOceanPoint(d.targetX, d.targetY)) {
+                d.state='idle'; d.targetX=null; d.targetY=null; d.path=null;
+                return;
+            }
+        }
+        let ut=UNIT_TYPES[d.type]||UNIT_TYPES.infantry;
+        let speed=ut.speed*effectiveDays;
+        speed *= 2.5;
+        // 断粮（口粮归零）移速惩罚
+        if (d.supplyStatus === 'starve' && typeof GRAIN_STARVE !== 'undefined') speed *= GRAIN_STARVE.speed;
+        // 指挥系统：移速加成（集团军指挥官 + 总司令光环）
+        if (typeof getDivisionSpdBonus === 'function') {
+            let _spdB = getDivisionSpdBonus(d);
+            if (_spdB > 0) speed *= 1 + _spdB;
+        }
+        // 预测性省界检查（陆军）—— 空军可飞越国界
+        if (!isSeaType(d.type) && d.type !== 'airplane') {
+            let curPid = getProvinceAt(d.rx, d.ry);
+            if (curPid && canEnterProvince(curPid, d.country)) {
+                let dx=d.targetX-d.rx;let dy=d.targetY-d.ry;
+                let dist=Math.hypot(dx,dy);
+                let checkDist = Math.min(0.03, dist);
+                if (dist > 0 && checkDist > 0.001) {
+                    let checkX = d.rx + (dx/dist) * checkDist;
+                    let checkY = d.ry + (dy/dist) * checkDist;
+                    let checkPid = getProvinceAt(checkX, checkY);
+                    if (checkPid && checkPid !== curPid && !canEnterProvince(checkPid, d.country)) {
+                        // 前方受阻 → 尝试重算绕行路径
+                        let endProv = d._finalTargetProv || getProvinceAt(d._finalTargetX || d.targetX, d._finalTargetY || d.targetY);
+                        if (endProv && curPid !== endProv && typeof findProvincePath === 'function') {
+                            let newPath = findProvincePath(curPid, endProv, d.country);
+                            if (newPath && newPath.length > 0) {
+                                let path = [];
+                                for (let i = 1; i < newPath.length; i++) {
+                                    let pid = newPath[i];
+                                    let pp = PROVINCES.find(x => x.id === pid);
+                                    if (pp && pp.x < 900) path.push({ x: pp.x, y: pp.y });
+                                }
+                                if (path.length > 0) {
+                                    d.path = path; d.pathIndex = 0;
+                                    d.targetX = path[0].x; d.targetY = path[0].y;
+                                    return;
+                                }
+                            }
+                        }
+                        // 无路可走 → 取消运兵
+                        if (d.railTrip) cancelRailTrip(d, "无法步行到达车站，运兵取消");
+                        d.state='idle'; d.targetX=null; d.targetY=null; d.path=null;
+                        return;
+                    }
+                }
+            }
+        }
+        // 路径跟随（省份中心航点）
+        if (d.path && d.pathIndex < d.path.length) {
+            let wp = d.path[d.pathIndex];
+            let wpDist = Math.hypot(d.rx - wp.x, d.ry - wp.y);
+            if (wpDist < 0.15) {
+                d.pathIndex++;
+                if (d.pathIndex >= d.path.length) {
+                    d.path = null;
+                } else {
+                    d.targetX = d.path[d.pathIndex].x;
+                    d.targetY = d.path[d.pathIndex].y;
+                }
+            } else {
+                d.targetX = wp.x;
+                d.targetY = wp.y;
+            }
+        }
+        // 实际移动
+        let dx=d.targetX-d.rx;let dy=d.targetY-d.ry;
+        let dist=Math.hypot(dx,dy);
+        // 进站判定半径：0.04°（大于碰撞箱推挤作用范围 0.037°，步行接驳单位即使被周围单位/建筑推挤也能进站上车）
+        if(dist>Math.max(speed, 0.04)){
+            let ndx = dx/dist; let ndy = dy/dist;
+            d.rx+=ndx*speed;d.ry+=ndy*speed;
+            d.moveDx = dx;
+            if (Math.abs(ndx) > Math.abs(ndy)) {
+                d.facing = ndx > 0 ? 'e' : 'w';
+            } else {
+                d.facing = ndy > 0 ? 's' : 'n';
+            }
+        }else{
+            d.rx=d.targetX;d.ry=d.targetY;
+            // 到达起点站 → 上车（计算铁路路径，转入乘车阶段）
+            let p = railwayPath(rt.from, rt.to, d.country);
+            if (!p || p.length < 2) {
+                cancelRailTrip(d, "铁路线路不可用，运兵取消");
+            } else {
+                rt.path = p;
+                rt.seg = 0;
+                rt.stage = 'on_train';
+                let cA = G.cities[p[0]], cB = G.cities[p[1]];
+                if (cA && cB) { d.targetX = cB.lon; d.targetY = cB.lat; }
+                addGameLog("🚂 " + (d.name || "部队") + " 已登上开往 " + (G.cities[rt.to] ? G.cities[rt.to].name : "") + " 的火车");
+            }
+        }
+    }
+}
 // 发起铁路运兵：单位先步行到起点站，再沿铁路网乘车至目的站
 // fromCityId 为 null 时，每个单位各自寻找最近的可用车站在上车（多选分散时各自就近）
 function startRailTrip(unitIds, fromCityId, toCityId) {
@@ -689,7 +826,8 @@ function getProvinceAt(x, y) {
 }
 
 function moveUnits(days) {
-    let separation = 0.008;
+    let effZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
+    let separation = (7 * 0.875 / 3 * effZoom) / (typeof PIXELS_PER_DEGREE !== 'undefined' ? PIXELS_PER_DEGREE : 100);
     let effectiveDays = Math.min(days, 0.04);
     effectiveDays = Math.max(effectiveDays, 0);
 outer: for (let d of G.divisions) {
@@ -698,36 +836,8 @@ outer: for (let d of G.divisions) {
             if(c&&c.center){d.rx=c.center[0];d.ry=c.center[1];}
         }
         if ((d.state==='moving'||d.state==='retreating')&&d.targetX!==null) {
-            // ===== 铁路运兵：乘车阶段（在车厢内，沿铁路网快速移动，不可开火） =====
-            if (d.railTrip && d.railTrip.stage === 'on_train') {
-                let rt = d.railTrip;
-                let a = rt.path[rt.seg], b = rt.path[rt.seg + 1];
-                if (b === undefined) { cancelRailTrip(d, null, true); continue outer; }
-                // 铁路被切断（城市易主/段被摧毁）→ 立即下车
-                if (!railwayUsable(a, b, d.country)) { cancelRailTrip(d, "铁路中断，已下车（" + d.name + "）"); continue outer; }
-                let cB = G.cities[b];
-                let ut2 = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
-                let spd = ut2.speed * effectiveDays * 2.5 * railSegmentMult(a, b);
-                let dx = cB.lon - d.rx, dy = cB.lat - d.ry;
-                let dist = Math.hypot(dx, dy);
-                if (dist > spd) {
-                    d.rx += dx / dist * spd; d.ry += dy / dist * spd;
-                    d.moveDx = dx;
-                    d.facing = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'e' : 'w') : (dy > 0 ? 's' : 'n');
-                } else {
-                    d.rx = cB.lon; d.ry = cB.lat;
-                    rt.seg++;
-                    if (rt.seg >= rt.path.length - 1) {
-                        let toName = G.cities[rt.to] ? G.cities[rt.to].name : "";
-                        cancelRailTrip(d, null, true);
-                        d.state = 'idle'; d.targetX = null; d.targetY = null; d.path = null;
-                        addGameLog("🚂 " + (d.name || "部队") + " 乘火车抵达 " + toName + "，已下车");
-                    } else {
-                        d.targetX = cB.lon; d.targetY = cB.lat;
-                    }
-                }
-                continue outer;
-            }
+            // 铁路运兵单位（步行接驳/乘车）由 moveRailUnit 统一处理
+            if (d.railTrip) { moveRailUnit(d, days); continue outer; }
             // 海洋封锁：陆军禁止下海（空军可飞越）
             if (!isSeaType(d.type) && d.type !== 'airplane' && typeof isOceanPoint === 'function') {
                 if (isOceanPoint(d.rx, d.ry) || isOceanPoint(d.targetX, d.targetY)) {
@@ -838,21 +948,6 @@ outer: for (let d of G.divisions) {
                 }
             }else{
                 d.rx=d.targetX;d.ry=d.targetY;
-                // 铁路运兵步行接驳阶段：到达起点站 → 上车（计算铁路路径，转入乘车阶段）
-                if (d.railTrip && d.railTrip.stage === 'walk_to_station') {
-                    let p = railwayPath(d.railTrip.from, d.railTrip.to, d.country);
-                    if (!p || p.length < 2) {
-                        cancelRailTrip(d, "铁路线路不可用，运兵取消");
-                    } else {
-                        d.railTrip.path = p;
-                        d.railTrip.seg = 0;
-                        d.railTrip.stage = 'on_train';
-                        let cA = G.cities[p[0]], cB = G.cities[p[1]];
-                        if (cA && cB) { d.targetX = cB.lon; d.targetY = cB.lat; }
-                        addGameLog("🚂 " + (d.name || "部队") + " 已登上开往 " + (G.cities[d.railTrip.to] ? G.cities[d.railTrip.to].name : "") + " 的火车");
-                    }
-                    continue outer;
-                }
                 d.state='idle';d.targetX=null;d.targetY=null;
                 d.path = null;
             }
@@ -888,6 +983,35 @@ outer: for (let d of G.divisions) {
                             e.rx -= nx * push; e.ry -= ny * push;
                         }
                     }
+                }
+            }
+        }
+    }
+    // 建筑碰撞分离：只对城市生效，碰撞箱=选中圈大小
+    {
+        let bEffZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
+        let PPD = typeof PIXELS_PER_DEGREE !== 'undefined' ? PIXELS_PER_DEGREE : 100;
+
+        for (let city of CITIES) {
+            let cityData = G.cities[city.id];
+            if (!cityData || cityData.hp <= 0) continue;
+            if (!city.isCapital && zoom <= 0.35) continue;
+            if (!city.isCapital && !(_MAJOR_CITIES.has(city.id) || (typeof isMajorCity === 'function' && isMajorCity(city.id))) && zoom <= 0.7) continue;
+            let isMajor = _MAJOR_CITIES.has(city.id) || (typeof isMajorCity === 'function' && isMajorCity(city.id));
+            // 选中圈=碰撞箱=点击圈：首都 2.5*effZoom，大城市 4.5*effZoom，小城市 2.5*effZoom
+            let selR = city.isCapital ? 2.5 * bEffZoom : (isMajor ? 4.5 * bEffZoom : 2.5 * bEffZoom);
+            let bR = selR / (zoom * PPD);
+
+            for (let d of G.divisions) {
+                if (d.rx === undefined) continue;
+                let sdx = d.rx - city.lon;
+                let sdy = d.ry - city.lat;
+                let dist = Math.hypot(sdx, sdy);
+                let minDist = bR;
+                if (dist < minDist && dist > 0.001) {
+                    let push = (minDist - dist) / minDist * 0.03;
+                    let nx = sdx / dist, ny = sdy / dist;
+                    d.rx += nx * push; d.ry += ny * push;
                 }
             }
         }
@@ -1026,8 +1150,8 @@ function fireUnits(days) {
         if(!ut) continue;
         // 铁路运兵乘车阶段：在车厢内不可开火
         if (d.railTrip && d.railTrip.stage === 'on_train') continue;
-        // 缺粮（断粮）状态：全属性 -40%（伤害/射程/射速；移速在 ai_pathfinding 中同乘 0.6）
-        let sMult = d.supplyStatus === 'starve' ? 0.6 : 1;
+        // 缺粮/断粮状态：全属性倍率（断粮 -40%，短缺 -15%；移速在 ai_pathfinding 中同乘）
+        let sMult = (typeof grainMultFor === 'function') ? grainMultFor(d) : 1;
         // Use navy-specific stats if available
         let vRange = ((isSeaType(d.type) && d.navyRng !== undefined) ? d.navyRng : ut.range) * sMult;
         // 炮兵位于山地：射程 +20%
@@ -1063,13 +1187,16 @@ function fireUnits(days) {
 
         let isPlayer = d.country === G.playerCountry;
 
-        // Focus target: player right-clicked enemy
+        // Focus target: player right-clicked enemy unit（海军/潜艇只允许对海目标开火，不能炮击陆军/空军）
         if (d.focusTarget) {
             let ft = _divOf(d.focusTarget);
             if(ft&&ft.strength>0&&ft.country!==d.country){
-                lockTarget = ft;
-                let dist=Math.hypot(d.rx-ft.rx,d.ry-ft.ry);
-                if(dist<vRange) fireTarget = ft;
+                if (isSeaType(d.type) && !isSeaType(ft.type)) { d.focusTarget = null; }
+                else {
+                    lockTarget = ft;
+                    let dist=Math.hypot(d.rx-ft.rx,d.ry-ft.ry);
+                    if(dist<vRange) fireTarget = ft;
+                }
             } else {
                 d.focusTarget=null;
             }
@@ -1148,6 +1275,8 @@ function fireUnits(days) {
                     if (!bucket) continue;
                     for (let e of bucket) {
                         if (e.country === d.country || e.submerged) continue;
+                        // 海军/潜艇只能对海目标开火（陆军/空军不受舰炮威胁）
+                        if (isSeaType(d.type) && !isSeaType(e.type)) continue;
                         let ddx = Math.abs(d.rx - e.rx);
                         let ddy = Math.abs(d.ry - e.ry);
                         if (ddx > maxRange || ddy > maxRange) continue;
@@ -1230,6 +1359,8 @@ function fireUnits(days) {
                     if (!bucket) continue;
                     for (let e of bucket) {
                         if (e.country === d.country || e.submerged) continue;
+                        // 海军/潜艇只锁定对海目标
+                        if (isSeaType(d.type) && !isSeaType(e.type)) continue;
                         let ddx = Math.abs(d.rx - e.rx);
                         let ddy = Math.abs(d.ry - e.ry);
                         if (ddx > 2 || ddy > 2) continue;
@@ -1951,11 +2082,11 @@ function findSupplyCity(d) {
     if (bestKm > (best.supplyRadius || 50)) return null;
     return { city: best, distKm: bestKm };
 }
-// 部队口粮上限：基础 30 天，将领后勤加成可多携带（后勤+10% → 上限 33 天）
+// 部队口粮上限：基础 50 天，将领后勤加成可多携带（后勤+10% → 上限 55 天）
 function rationsMaxFor(d) {
     let lb = 0;
     if (d && typeof getDivisionLogiBonus === 'function') lb = getDivisionLogiBonus(d) || 0;
-    return Math.round((typeof GRAIN_RATIONS_MAX !== 'undefined' ? GRAIN_RATIONS_MAX : 30) * (1 + lb));
+    return Math.round((typeof GRAIN_RATIONS_MAX !== 'undefined' ? GRAIN_RATIONS_MAX : 50) * (1 + lb));
 }
 function updateGrain(days) {
     if (!G.cities) return;
@@ -1963,11 +2094,17 @@ function updateGrain(days) {
     for (let cid in G.cities) {
         let c = G.cities[cid];
         if (c.grainMax === undefined) continue;
+        // 配置同步：粮食产量/储备向最新配置看齐（只升不降，兼容旧存档）
+        let gcfg = (typeof GRAIN_CITY_CFG !== 'undefined' && GRAIN_CITY_CFG[c.cityType]) ? GRAIN_CITY_CFG[c.cityType] : null;
+        if (gcfg) {
+            if (c.grainPerMonth < gcfg.grainPerMonth) c.grainPerMonth = gcfg.grainPerMonth;
+            if (c.grainMax < gcfg.grainMax) c.grainMax = gcfg.grainMax;
+        }
         if (c.grainUpgradeProgress > 0) {
             c.grainUpgradeProgress = Math.max(0, c.grainUpgradeProgress - days);
             if (c.grainUpgradeProgress <= 0) {
                 c.grainUpgraded = true;
-                c.grainPerMonth = (c.cityType === 'small') ? 30 : (c.grainPerMonth || 15) * 2;
+                c.grainPerMonth = (c.cityType === 'small') ? 120 : (c.grainPerMonth || 60) * 2;
                 addGameLog(c.name + " 粮食产量提升完成（月产 " + c.grainPerMonth + "）");
             }
         }
@@ -1985,14 +2122,10 @@ function updateGrain(days) {
         if (perMonth <= 0) continue; // 海军/潜艇走海上补给
         let s = findSupplyCity(d);
         if (!s) {
-            // 断粮：不在任何己方城市补给半径内
-            d.supplyStatus = 'starve';
+            // 不在任何己方城市补给半径内：短缺（口粮持续消耗，无负面效果）；口粮归零才转入断粮 debuff
+            d.supplyStatus = 'low';
             d.rations = Math.max(0, d.rations - days);
-            if (d.rations <= 0) {
-                // 口粮耗尽：每天固定扣 5 点兵力
-                let atk = (typeof GRAIN_STARVE !== 'undefined' && GRAIN_STARVE.attritionPerDay) || 5;
-                d.strength = Math.max(1, d.strength - atk * days);
-            }
+            if (d.rations <= 0) d.supplyStatus = 'starve';
             continue;
         }
         s.city.suppliedDivs++;
@@ -2004,7 +2137,10 @@ function updateGrain(days) {
             let _rec = ((typeof GRAIN_RATIONS_RECOVER_DAY !== 'undefined') ? GRAIN_RATIONS_RECOVER_DAY : 5) * days;
             d.rations = Math.min(rationsMaxFor(d), (d.rations === undefined ? 0 : d.rations) + _rec);
         } else {
+            // 城市粮仓见底：口粮照常消耗不再补充，耗尽后转入断粮 debuff
             d.supplyStatus = 'low';
+            d.rations = Math.max(0, (d.rations === undefined ? rationsMaxFor(d) : d.rations) - days);
+            if (d.rations <= 0) d.supplyStatus = 'starve';
         }
         // 口粮充足（≥25天）：每天恢复 3 点兵力
         if ((d.rations || 0) >= 25) {
@@ -3933,7 +4069,7 @@ function findUnitAtScreen(sx, sy) {
         if (!isSeaType(d.type) && zoom <= 0.35) continue;
         let dist = Math.hypot(sx - ux, sy - uy);
         // 判定圈贴合贴图实际大小：海军 42(≈35×1.2)、陆军 8(≈6.1×1.3)，随 effZoom 缩放；不随射程
-        let hitR = (d.type === 'navy' ? 42 : 8) * Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
+        let hitR = (d.type === 'navy' ? 42 : 8 / 3) * Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
         if (dist < hitR && dist < bestDist) { best = d; bestDist = dist; }
     }
     return best;
@@ -4010,7 +4146,7 @@ canvas.addEventListener("wheel",(e)=>{
     if (G._railModal && window._railModalRect) {
         let mr = window._railModalRect;
         if (sx > mr.x && sx < mr.x + mr.w && sy > mr.y && sy < mr.y + mr.h) {
-            G._railModal.scroll = Math.max(0, Math.min(G._railModalMaxScroll || 0, (G._railModal.scroll || 0) + e.deltaY));
+            G._railModal.scroll = Math.max(0, Math.min(window._railModalMaxScroll || 0, (G._railModal.scroll || 0) + e.deltaY));
             return;
         }
     }
@@ -4191,12 +4327,15 @@ canvas.addEventListener("pointerup",(e)=>{
                 G._cmdModal = null;
                 let x1=Math.min(G.selBox.x1,G.selBox.x2),y1=Math.min(G.selBox.y1,G.selBox.y2);
                 let x2=Math.max(G.selBox.x1,G.selBox.x2),y2=Math.max(G.selBox.y1,G.selBox.y2);
-                for(let d of G.divisions){
-                    if(d.country!==G.playerCountry) continue;
-                    let rx=d.rx!==undefined?d.rx:0, ry=d.ry!==undefined?d.ry:0;
-                    if(!rx){let dp=G.provinceData[d.province];if(dp&&dp.center){rx=dp.center[0];ry=dp.center[1];}}
-                    let[tx,ty]=worldToScreen(rx,ry);
-                    if(tx>x1&&tx<x2&&ty>y1&&ty<y2) G.selectedDivisions.push(d.id);
+                // 城市视图模式下不框选士兵
+                if (!G.cityViewMode) {
+                    for(let d of G.divisions){
+                        if(d.country!==G.playerCountry) continue;
+                        let rx=d.rx!==undefined?d.rx:0, ry=d.ry!==undefined?d.ry:0;
+                        if(!rx){let dp=G.provinceData[d.province];if(dp&&dp.center){rx=dp.center[0];ry=dp.center[1];}}
+                        let[tx,ty]=worldToScreen(rx,ry);
+                        if(tx>x1&&tx<x2&&ty>y1&&ty<y2) G.selectedDivisions.push(d.id);
+                    }
                 }
                 // 框选城市（仅本国城市，与单位一起选中时优先显示单位）
                 for (let cid in G.cities) {
@@ -4246,6 +4385,17 @@ canvas.addEventListener("pointerup",(e)=>{
         if (window._railBtnRect && sx > window._railBtnRect.x && sx < window._railBtnRect.x + window._railBtnRect.w && sy > window._railBtnRect.y && sy < window._railBtnRect.y + window._railBtnRect.h) {
             G.railwaysView = !(G.railwaysView !== false);
             addGameLog("铁路视图: " + (G.railwaysView === false ? "关闭" : "开启"));
+            isDragging = false;
+            return;
+        }
+
+        // 城市视图切换按钮（右下角）
+        if (window._cityViewBtnRect && sx > window._cityViewBtnRect.x && sx < window._cityViewBtnRect.x + window._cityViewBtnRect.w && sy > window._cityViewBtnRect.y && sy < window._cityViewBtnRect.y + window._cityViewBtnRect.h) {
+            G.cityViewMode = !G.cityViewMode;
+            G.selectedDivisions = [];
+            G.selectedCity = null;
+            G.selectedCities = [];
+            addGameLog("城市视图: " + (G.cityViewMode ? "开启" : "关闭"));
             isDragging = false;
             return;
         }
@@ -4618,7 +4768,7 @@ canvas.addEventListener("contextmenu",(e)=>{
             let rx=d.rx!==undefined?d.rx:0; let ry=d.ry!==undefined?d.ry:0;
             if(!rx){let dp=G.provinceData[d.province];if(dp&&dp.center){rx=dp.center[0];ry=dp.center[1];}}
             let[ux,uy]=worldToScreen(rx,ry);
-            if(Math.hypot(sx-ux,sy-uy)<25*zoom){enemyTarget=d;break;}
+            if(Math.hypot(sx-ux,sy-uy)<8.33*zoom){enemyTarget=d;break;}
         }
         if (enemyTarget) {
             MP.sendAction({ type: 'focus', unitIds: [...G.selectedDivisions], targetUnitId: enemyTarget.id });
@@ -4662,7 +4812,7 @@ canvas.addEventListener("contextmenu",(e)=>{
         let rx=d.rx!==undefined?d.rx:0; let ry=d.ry!==undefined?d.ry:0;
         if(!rx){let dp=G.provinceData[d.province];if(dp&&dp.center){rx=dp.center[0];ry=dp.center[1];}}
         let[ux,uy]=worldToScreen(rx,ry);
-        if(Math.hypot(sx-ux,sy-uy)<25*zoom){enemyTarget=d;break;}
+        if(Math.hypot(sx-ux,sy-uy)<8.33*zoom){enemyTarget=d;break;}
     }
 
     if (enemyTarget) {

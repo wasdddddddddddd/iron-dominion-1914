@@ -648,6 +648,8 @@ moveUnits = function(days) {
         if (typeof isSeaType === 'function' ? isSeaType(d.type) : d.type === 'navy') continue;
         if (d.state !== 'moving' || d.targetX === null) continue;
         if (d.rx === undefined) continue;
+        // 铁路运兵单位（步行接驳/乘车）由 game_core 的 moveRailUnit 统一处理
+        if (d.railTrip) { moveRailUnit(d, ed); continue; }
 
         let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
         let spd = ut.speed * ed * 2.5;
@@ -957,10 +959,13 @@ moveUnits = function(days) {
     }
 
     // 6c4. 碰撞分离（原版在 _origMoveUnits 内，但 6b 恢复了位置）
-    let separation = 0.008;
+    // 乘车中（on_train）单位不受推挤；步行接驳/普通单位照常受单位间分离影响
+    let separation = 0.037;
     for (let d of G.divisions) {
+        if (d.railTrip && d.railTrip.stage === 'on_train') continue;
         for (let e of G.divisions) {
             if (d.id >= e.id) continue;
+            if (e.railTrip && e.railTrip.stage === 'on_train') continue;
             let dx = d.rx - e.rx;
             if (Math.abs(dx) > separation) continue;
             let dy = d.ry - e.ry;
@@ -971,6 +976,40 @@ moveUnits = function(days) {
                 let nx = dx / dist, ny = dy / dist;
                 d.rx += nx * push; d.ry += ny * push;
                 e.rx -= nx * push; e.ry -= ny * push;
+            }
+        }
+    }
+
+    // 6c5. 建筑碰撞分离（只对城市生效，碰撞箱=选中圈大小）
+    {
+        let bEffZoom = typeof zoom !== 'undefined' ? Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8) : 1.8;
+        let PPD = typeof PIXELS_PER_DEGREE !== 'undefined' ? PIXELS_PER_DEGREE : 100;
+
+        if (typeof CITIES !== 'undefined') {
+            for (let city of CITIES) {
+                let cityData = G.cities[city.id];
+                if (!cityData || cityData.hp <= 0) continue;
+                let isMajor = (typeof _MAJOR_CITIES !== 'undefined' && _MAJOR_CITIES.has(city.id)) || (typeof isMajorCity === 'function' && isMajorCity(city.id));
+                // 选中圈=碰撞箱=点击圈：首都 2.5*effZoom，大城市 4.5*effZoom，小城市 2.5*effZoom
+                let selR = city.isCapital ? 2.5 * bEffZoom : (isMajor ? 4.5 * bEffZoom : 2.5 * bEffZoom);
+                let bR = selR / (zoom * PPD);
+
+                for (let d of G.divisions) {
+                    if (d.rx === undefined) continue;
+                    // 乘车中（on_train）不受建筑推挤
+                    if (d.railTrip && d.railTrip.stage === 'on_train') continue;
+                    // 步行接驳：目标车站不推挤（否则永远到不了站）；其他建筑推挤照常
+                    if (d.railTrip && d.railTrip.stage === 'walk_to_station' && d.targetX === city.lon && d.targetY === city.lat) continue;
+                    let sdx = d.rx - city.lon;
+                    let sdy = d.ry - city.lat;
+                    let dist = Math.hypot(sdx, sdy);
+                    let minDist = bR;
+                    if (dist < minDist && dist > 0.001) {
+                        let push = (minDist - dist) / minDist * 0.05;
+                        let nx = sdx / dist, ny = sdy / dist;
+                        d.rx += nx * push; d.ry += ny * push;
+                    }
+                }
             }
         }
     }
