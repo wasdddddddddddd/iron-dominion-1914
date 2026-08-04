@@ -1909,19 +1909,35 @@ function updateProjectiles(days) {
 
 function updateFireZones(days) {
     if (!G.fireZones || G.fireZones.length === 0) return;
+    // 单位 0.5° 桶索引（惰性构建）：火区只查邻近格，避免 O(火区×全部单位)
+    let divBuckets = null;
     G.fireZones = G.fireZones.filter(fz => {
         fz.life -= days;
         if (fz.life <= 0) return false;
-        // 火焰半径内敌人扣血
-        for (let d of G.divisions) {
-            if (d.country === fz.shooterCountry || d.strength <= 0) continue;
-            let dist = Math.hypot(d.rx - fz.x, d.ry - fz.y);
-            if (dist < fz.radius) {
-                d.strength = Math.max(0, d.strength - cmdDamageReduced(d, fz.damage * days));
-                d.hitFlash = 6;
-                if (d.strength <= 0) {
-                    let msg = d.type === 'navy' || d.type === 'submarine' ? (d.name + " 💀⚓") : (d.name + " 被火焰烧死");
-                    removeDivision(d); addGameLog(msg);
+        if (!divBuckets) {
+            divBuckets = Object.create(null);
+            for (let d of G.divisions) {
+                if (d.strength <= 0 || d.rx === undefined) continue;
+                let k = Math.floor(d.rx / 0.5) + ',' + Math.floor(d.ry / 0.5);
+                (divBuckets[k] || (divBuckets[k] = [])).push(d);
+            }
+        }
+        let bx = Math.floor(fz.x / 0.5), by = Math.floor(fz.y / 0.5);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                let b = divBuckets[bx + dx + ',' + (by + dy)];
+                if (!b) continue;
+                for (let d of b) {
+                    if (d.country === fz.shooterCountry || d.strength <= 0) continue;
+                    let dist = Math.hypot(d.rx - fz.x, d.ry - fz.y);
+                    if (dist < fz.radius) {
+                        d.strength = Math.max(0, d.strength - cmdDamageReduced(d, fz.damage * days));
+                        d.hitFlash = 6;
+                        if (d.strength <= 0) {
+                            let msg = d.type === 'navy' || d.type === 'submarine' ? (d.name + " 💀⚓") : (d.name + " 被火焰烧死");
+                            removeDivision(d); addGameLog(msg);
+                        }
+                    }
                 }
             }
         }
@@ -1939,19 +1955,35 @@ function updateFireZones(days) {
     });
 }
 
-// ===== 城市占领处理 =====
+// ===== 城市占领处理（单位按 0.5° 桶索引，替代每帧 O(中立城市×单位) 全配对） =====
 function updateNeutralCityCapture(days) {
     if (!G.cities) return;
+    let divBuckets = null;
     for (let cid in G.cities) {
         let city = G.cities[cid];
         if (city.owner || city.hp > 0) continue;
         let isCap = city.isCapital || false;
         let isMaj = typeof isMajorCity === 'function' && isMajorCity(city.id);
         let capRange = (isCap || isMaj) ? 0.30 : 0.24;
-        for (let d of G.divisions) {
-            if (d.strength <= 0) continue;
-            let dist = Math.hypot(city.lon - (d.rx || 0), city.lat - (d.ry || 0));
-            if (dist < capRange) { handleCityCapture(city); break; }
+        if (!divBuckets) {
+            divBuckets = Object.create(null);
+            for (let d of G.divisions) {
+                if (d.strength <= 0 || d.rx === undefined) continue;
+                let k = Math.floor(d.rx / 0.5) + ',' + Math.floor(d.ry / 0.5);
+                (divBuckets[k] || (divBuckets[k] = [])).push(d);
+            }
+        }
+        let bx = Math.floor(city.lon / 0.5), by = Math.floor(city.lat / 0.5);
+        let captured = false;
+        for (let dx = -1; dx <= 1 && !captured; dx++) {
+            for (let dy = -1; dy <= 1 && !captured; dy++) {
+                let b = divBuckets[bx + dx + ',' + (by + dy)];
+                if (!b) continue;
+                for (let d of b) {
+                    let dist = Math.hypot(city.lon - (d.rx || 0), city.lat - (d.ry || 0));
+                    if (dist < capRange) { handleCityCapture(city); captured = true; break; }
+                }
+            }
         }
     }
 }
@@ -3346,6 +3378,8 @@ function transferRemainingProvincesOnSurrender(co) {
 }
 
 function checkSurrender() {
+    // 节流：投降判定每 30 帧（约半秒）检查一次，避免每帧对每国 Object.values(cities).filter
+    if ((G._surrenderTick = (G._surrenderTick || 0) + 1) % 30 !== 0) return;
     for (let co in G.countries) {
         if (G.surrendered[co]) continue;
         let cd = G.countries[co];

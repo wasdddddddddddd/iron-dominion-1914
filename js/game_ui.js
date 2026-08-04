@@ -378,6 +378,19 @@ function drawSelection() {
     ctx.restore();
 }
 
+// 国家→质心/面积 预计算（一次构建，替代每帧每国 PROVINCES.filter 扫描）
+let _countryNameCache = null;
+function _countryNameData() {
+    if (_countryNameCache) return _countryNameCache;
+    _countryNameCache = {};
+    if (typeof PROVINCES === 'undefined') return _countryNameCache;
+    for (let p of PROVINCES) {
+        if (p.x >= 900) continue;
+        let e = _countryNameCache[p.c] || (_countryNameCache[p.c] = { n: 0, x: 0, y: 0 });
+        e.x += p.x; e.y += p.y; e.n++;
+    }
+    return _countryNameCache;
+}
 function drawCountryNames() {
     if (zoom > 1.0) {
         // 战役/战术层只显示选中国家
@@ -385,11 +398,9 @@ function drawCountryNames() {
         const cid = selectedProvince.c;
         const name = COUNTRY_CN[cid];
         if (!name) return;
-        const provs = PROVINCES.filter(pp => pp.c === cid && pp.x < 900);
-        if (!provs.length) return;
-        let lon = 0, lat = 0, n = 0;
-        for (let pp of provs) { lon += pp.x; lat += pp.y; n++; }
-        const [sx, sy] = worldToScreen(lon/n, lat/n);
+        const e = _countryNameData()[cid];
+        if (!e || !e.n) return;
+        const [sx, sy] = worldToScreen(e.x / e.n, e.y / e.n);
         ctx.font = "bold 22px Georgia,serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -404,17 +415,13 @@ function drawCountryNames() {
         return;
     }
     // 战略层显示所有国家名
-    const seen = new Set();
-    for (let p of PROVINCES) {
-        if (seen.has(p.c)) continue;
-        seen.add(p.c);
-        const name = COUNTRY_CN[p.c];
+    const cache = _countryNameData();
+    for (let cid in cache) {
+        const e = cache[cid];
+        if (!e.n) continue;
+        const name = COUNTRY_CN[cid];
         if (!name) continue;
-        const provs = PROVINCES.filter(pp => pp.c === p.c && pp.x < 900);
-        if (!provs.length) continue;
-        let lon = 0, lat = 0, n = 0;
-        for (let pp of provs) { lon += pp.x; lat += pp.y; n++; }
-        const [sx, sy] = worldToScreen(lon/n, lat/n);
+        const [sx, sy] = worldToScreen(e.x / e.n, e.y / e.n);
         ctx.font = "bold 16px Georgia,serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
