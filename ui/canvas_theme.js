@@ -50,11 +50,13 @@ const CT = {
 
     ctx.save();
 
-    // 面板阴影
-    ctx.shadowColor = 'rgba(0,0,0,0.4)';
-    ctx.shadowBlur = 12;
-    ctx.shadowOffsetX = 0;
-    ctx.shadowOffsetY = 3;
+    // 面板阴影（每帧重绘的热面板传 noShadow 跳过，避免软件渲染开销）
+    if (!opts.noShadow) {
+      ctx.shadowColor = 'rgba(0,0,0,0.4)';
+      ctx.shadowBlur = 12;
+      ctx.shadowOffsetX = 0;
+      ctx.shadowOffsetY = 3;
+    }
 
     // 主体填充（渐变）
     CT.roundRectPath(ctx, x, y, w, h, r);

@@ -250,6 +250,7 @@ function invalidateRailCaches() {
     _railPassCache = null;
     _railGraphCache = null;
     _railNodeSetCache = null;
+    if (G) G._railVer = (G._railVer || 0) + 1;
 }
 // 城市 → 沿己方可用的铁路段 BFS 可达的所有城市（补给链/运兵用）
 function railwayReachableCities(fromCityId, country) {
@@ -903,12 +904,22 @@ function updateGame(dtMs) {
     // Navy node healing: ships near their own node recover HP
     if (typeof G.navyNodes !== 'undefined') {
         let nodeDays = (dtMs / 1000) * speed / 24;
+        // 按国家分组的海军节点索引（惰性构建，仅在存在受伤海军时）
+        let healNodesByCountry = null;
         for (let d of G.divisions) {
             if (!isSeaType(d.type) || d.strength <= 0) continue;
             if (d.strength >= (d.maxStrength || 500)) continue;
-            for (let id in G.navyNodes) {
-                let node = G.navyNodes[id];
-                if (node.country !== d.country) continue;
+            if (!healNodesByCountry) {
+                healNodesByCountry = {};
+                for (let id in G.navyNodes) {
+                    let n = G.navyNodes[id];
+                    if (n.country === undefined) continue;
+                    (healNodesByCountry[n.country] || (healNodesByCountry[n.country] = [])).push(n);
+                }
+            }
+            let nodes = healNodesByCountry[d.country];
+            if (!nodes) continue;
+            for (let node of nodes) {
                 let dist = Math.hypot(node.lon - d.rx, node.lat - d.ry);
                 if (dist < node.healRadius) {
                     let heal = 20 * nodeDays;
@@ -1550,7 +1561,7 @@ function fireUnits(days) {
             let humanCountries = G.multiplayerHumanCountries && G.multiplayerHumanCountries.length > 0 ? G.multiplayerHumanCountries : [G.playerCountry];
             let shouldMove = !humanCountries.includes(d.country);
             if (!shouldMove && d.focusTarget) {
-                let ft = G.divisions.find(x=>x.id===d.focusTarget);
+                let ft = _divOf(d.focusTarget);
                 if(ft) shouldMove = true;
             }
             if (!shouldMove && d.focusCity) {
@@ -1565,7 +1576,7 @@ function fireUnits(days) {
                 let moveTarget = null;
                 let tX, tY;
                 if (d.focusTarget) {
-                    moveTarget = G.divisions.find(x=>x.id===d.focusTarget) || lockTarget;
+                    moveTarget = _divOf(d.focusTarget) || lockTarget;
                 } else if (d.focusCity) {
                     let fc = G.cities[d.focusCity];
                     if (fc) { tX = fc.lon; tY = fc.lat; }
@@ -1949,6 +1960,8 @@ function handleCityCapture(city) {
     let isCap = city.isCapital || false;
     let isMaj = typeof isMajorCity === 'function' && isMajorCity(city.id);
     let vRange = (isCap || isMaj) ? 0.30 : 0.24;
+    // 地图版本号：省份着色随占领变化，静态世界层据此重绘
+    G._mapVer = (G._mapVer || 0) + 1;
     let nearest = null, nearestDist = vRange;
     for (let d of G.divisions) {
         if (d.strength <= 0) continue;
@@ -2400,7 +2413,7 @@ function updateFrontlineAdvance(days) {
 
     // 清理死单位
     for (let did in G.frontlines) {
-        let d = G.divisions.find(x => x.id == did);
+        let d = (G._divIndex && G._divIndex.get(did)) || G.divisions.find(x => x.id == did);
         if (!d || d.strength <= 0) delete G.frontlines[did];
     }
 
@@ -2440,14 +2453,14 @@ function updateFrontlineAdvance(days) {
         let groupUnitCount = 0;
         for (let did in G.frontlines) {
             if (G.frontlines[did] === grp.id) {
-                let d = G.divisions.find(x => x.id == did);
+                let d = (G._divIndex && G._divIndex.get(did)) || G.divisions.find(x => x.id == did);
                 if (d && d.strength > 0) groupUnitCount++;
             }
         }
         let gLen = Math.hypot(grp.end.x - grp.start.x, grp.end.y - grp.start.y);
         let needed = Math.max(3, Math.ceil(gLen / 0.3));
         G.frontlineReserves[grp.id] = G.frontlineReserves[grp.id].filter(rid => {
-            let d = G.divisions.find(x => x.id == rid);
+            let d = (G._divIndex && G._divIndex.get(rid)) || G.divisions.find(x => x.id == rid);
             return d && d.strength > 0;
         });
         let shortage = needed - groupUnitCount;
@@ -2909,7 +2922,7 @@ function drawFrontlineOverlay() {
     // 清理无单位的前线组
     let activeGroups = new Set();
     for (let did in G.frontlines) {
-        let d = G.divisions.find(x => x.id == did);
+        let d = (G._divIndex && G._divIndex.get(did)) || G.divisions.find(x => x.id == did);
         if (d && d.strength > 0) activeGroups.add(G.frontlines[did]);
         else delete G.frontlines[did];
     }
@@ -2955,7 +2968,7 @@ function drawFrontlineOverlay() {
         // 虚线连接单位到前线
         for (let did in G.frontlines) {
             if (G.frontlines[did] !== grp.id) continue;
-            let d = G.divisions.find(x => x.id == did);
+            let d = (G._divIndex && G._divIndex.get(did)) || G.divisions.find(x => x.id == did);
             if (!d || d.strength <= 0) continue;
             let [ux, uy] = worldToScreen(d.rx, d.ry);
             // 找单位在指挥线上的最近点
@@ -3004,6 +3017,28 @@ function drawFrontlineOverlay() {
 
 function updatePatrol(days) {
     const PATROL_RANGE = 0.8; // 驻军追击范围
+    // 敌方网格索引（0.4° 桶，每调用构建一次）：巡逻搜索只查邻近格，避免 O(巡逻数×全部师)
+    let patrolBuckets = null;
+    function enemiesNear(x, y) {
+        if (!patrolBuckets) {
+            patrolBuckets = Object.create(null);
+            for (let e of G.divisions) {
+                if (!e || e.strength <= 0 || e.rx === undefined) continue;
+                let k = Math.floor(e.rx / 0.4) + ',' + Math.floor(e.ry / 0.4);
+                (patrolBuckets[k] || (patrolBuckets[k] = [])).push(e);
+            }
+        }
+        let bx = Math.floor(x / 0.4), by = Math.floor(y / 0.4);
+        let out = [];
+        for (let dx = -3; dx <= 3; dx++) {
+            for (let dy = -3; dy <= 3; dy++) {
+                let b = patrolBuckets[(bx + dx) + ',' + (by + dy)];
+                if (!b) continue;
+                for (let e of b) out.push(e);
+            }
+        }
+        return out;
+    }
     for (let d of G.divisions) {
         if (!G.patrolTargets[d.id] || G.patrolTargets[d.id].length === 0) continue;
         if (d.state === 'moving') continue;
@@ -3025,9 +3060,9 @@ function updatePatrol(days) {
 
         let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
 
-        // 查找范围内最近的敌人
+        // 查找范围内最近的敌人（仅检查邻近网格候选）
         let nearestEnemy = null, bestDist = PATROL_RANGE;
-        for (let e of G.divisions) {
+        for (let e of enemiesNear(d.rx, d.ry)) {
             if (e.country === d.country || e.strength <= 0) continue;
             if (!canEngage(d.country, e.country)) continue;
             let dist = Math.hypot(d.rx - e.rx, d.ry - e.ry);
@@ -3056,7 +3091,7 @@ function updatePatrol(days) {
         if (d.patrolChase > 0) {
             d.patrolChase -= days;
             // 追逐期间扩大搜索范围
-            for (let e of G.divisions) {
+            for (let e of enemiesNear(d.rx, d.ry)) {
                 if (e.country === d.country || e.strength <= 0) continue;
                 if (!canEngage(d.country, e.country)) continue;
                 let dist = Math.hypot(d.rx - e.rx, d.ry - e.ry);
@@ -3298,6 +3333,7 @@ function transferRemainingProvincesOnSurrender(co) {
             ct.occupierFlag = defaultOwner;
         }
     }
+    G._mapVer = (G._mapVer || 0) + 1;
 
     for (let pd of provs) {
         if (pd.country !== co) continue;
@@ -3348,6 +3384,8 @@ function checkSurrender() {
 
         if (surrendered) {
             G.surrendered[co] = true;
+            // 地图版本号：投降国家省份着色变化
+            G._mapVer = (G._mapVer || 0) + 1;
             // 投降后，将所有剩余领土转移给占领者
             transferRemainingProvincesOnSurrender(co);
         }

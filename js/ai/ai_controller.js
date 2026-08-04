@@ -1189,11 +1189,27 @@ function aiPeaceSeeking(allCountries) {
 }
 
 // ===== 占领无防御省份 =====
+// 索引化：敌方师按省份分组、每国交战集合一次构建，去掉原 O(P²)+O(候选×师) 扫描
 function updateAIOccupation() {
     let allCountries = Object.keys(G.countries).filter(c =>
         c !== G.playerCountry &&
         G.countries[c].treasury !== undefined && !G.surrendered[c]
     );
+
+    // 省份 → 其中的单位列表（供 enemyPresent 快速判断）
+    let divsByProv = null;
+    function _provDivs(pid) {
+        if (!divsByProv) {
+            divsByProv = new Map();
+            for (let d of G.divisions) {
+                if (!d || d.strength <= 0 || !d.province) continue;
+                let arr = divsByProv.get(d.province);
+                if (!arr) { arr = []; divsByProv.set(d.province, arr); }
+                arr.push(d);
+            }
+        }
+        return divsByProv.get(pid);
+    }
 
     for (let co of allCountries) {
         let idleUnits = G.divisions.filter(d =>
@@ -1203,33 +1219,50 @@ function updateAIOccupation() {
         );
         if (idleUnits.length < 2) continue;
 
-        let ownedProvIds = Object.values(G.provinceData)
-            .filter(p => p.country === co && p.center)
-            .map(p => p.id);
+        let ownedProvIds = [];
+        for (let pid in G.provinceData) {
+            let p = G.provinceData[pid];
+            if (p.country === co && p.center) ownedProvIds.push(p.id);
+        }
+
+        // 与 co 交战的国家集合（一次性构建；含交战但场上暂无部队的国家，与原逐省 isAtWarWith 语义一致）
+        let enemySet = new Set();
+        for (let cc in G.countries) {
+            if (cc === co) continue;
+            if (isAtWarWith(co, cc)) enemySet.add(cc);
+        }
+        // co 的移动中单位（惰性构建，供 alreadyGoing 判断）
+        let movingUnits = null;
 
         let targetable = [];
+        let seenTargetable = new Set();
         for (let pid of ownedProvIds) {
             let pd = G.provinceData[pid];
             if (!pd || !pd.center) continue;
-            let nearbyProvs = Object.values(G.provinceData).filter(p =>
-                p.country !== co && p.center &&
-                Math.hypot(p.center[0] - pd.center[0], p.center[1] - pd.center[1]) < 3 &&
-                isAtWarWith(co, p.country)
-            );
-            for (let np of nearbyProvs) {
-                if (targetable.some(t => t.id === np.id)) continue;
-                let enemyPresent = G.divisions.some(d =>
-                    d.country !== co && d.strength > 0 &&
-                    isAtWarWith(co, d.country) &&
-                    d.province === np.id
-                );
-                let alreadyGoing = G.divisions.some(d =>
-                    d.country === co && d.state === 'moving' &&
-                    d.targetX !== null && np.center &&
-                    Math.hypot(d.targetX - np.center[0], d.targetY - np.center[1]) < 0.3
-                );
-                if (!enemyPresent && !alreadyGoing) {
-                    targetable.push({ id: np.id, dist: Math.hypot(np.center[0] - pd.center[0], np.center[1] - pd.center[1]) });
+            for (let npid in G.provinceData) {
+                let np = G.provinceData[npid];
+                if (!np || np.country === co || !np.center) continue;
+                if (seenTargetable.has(npid)) continue;
+                if (!enemySet.has(np.country)) continue;
+                let d0 = np.center[0] - pd.center[0], d1 = np.center[1] - pd.center[1];
+                if (d0 * d0 + d1 * d1 >= 9) continue;
+                let edivs = _provDivs(npid);
+                let enemyPresent = edivs ? edivs.some(d => enemySet.has(d.country)) : false;
+                if (enemyPresent) continue;
+                if (!movingUnits) {
+                    movingUnits = [];
+                    for (let d of G.divisions) {
+                        if (d.country === co && d.state === 'moving' && d.targetX !== null && d.targetY !== null) movingUnits.push(d);
+                    }
+                }
+                let alreadyGoing = false;
+                for (let m of movingUnits) {
+                    let mx = m.targetX - np.center[0], my = m.targetY - np.center[1];
+                    if (mx * mx + my * my < 0.09) { alreadyGoing = true; break; }
+                }
+                if (!alreadyGoing) {
+                    seenTargetable.add(npid);
+                    targetable.push({ id: npid, dist: Math.hypot(np.center[0] - pd.center[0], np.center[1] - pd.center[1]) });
                 }
             }
         }

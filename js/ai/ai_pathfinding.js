@@ -959,28 +959,47 @@ moveUnits = function(days) {
     }
 
     // 6c4. 碰撞分离（原版在 _origMoveUnits 内，但 6b 恢复了位置）
+    // 空间网格分桶（0.25°），只检查同格+邻格，避免 O(N²) 两两配对
     // 乘车中（on_train）单位不受推挤；步行接驳/普通单位照常受单位间分离影响
     let separation = 0.037;
-    for (let d of G.divisions) {
-        if (d.railTrip && d.railTrip.stage === 'on_train') continue;
-        for (let e of G.divisions) {
-            if (d.id >= e.id) continue;
-            if (e.railTrip && e.railTrip.stage === 'on_train') continue;
-            let dx = d.rx - e.rx;
-            if (Math.abs(dx) > separation) continue;
-            let dy = d.ry - e.ry;
-            if (Math.abs(dy) > separation) continue;
-            let dist = Math.hypot(dx, dy);
-            if (dist < separation && dist > 0.001) {
-                let push = (separation - dist) / separation * 0.01;
-                let nx = dx / dist, ny = dy / dist;
-                d.rx += nx * push; d.ry += ny * push;
-                e.rx -= nx * push; e.ry -= ny * push;
+    {
+        let SC = 0.25;
+        let sepBuckets = Object.create(null);
+        for (let d of G.divisions) {
+            if (d.rx === undefined) continue;
+            let k = Math.floor(d.rx / SC) + ',' + Math.floor(d.ry / SC);
+            (sepBuckets[k] || (sepBuckets[k] = [])).push(d);
+        }
+        for (let d of G.divisions) {
+            if (d.rx === undefined) continue;
+            if (d.railTrip && d.railTrip.stage === 'on_train') continue;
+            let bx = Math.floor(d.rx / SC), by = Math.floor(d.ry / SC);
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    let b = sepBuckets[(bx + dx) + ',' + (by + dy)];
+                    if (!b) continue;
+                    for (let e of b) {
+                        if (d.id >= e.id) continue;
+                        if (e.railTrip && e.railTrip.stage === 'on_train') continue;
+                        let sdx = d.rx - e.rx;
+                        if (Math.abs(sdx) > separation) continue;
+                        let sdy = d.ry - e.ry;
+                        if (Math.abs(sdy) > separation) continue;
+                        let dist = Math.hypot(sdx, sdy);
+                        if (dist < separation && dist > 0.001) {
+                            let push = (separation - dist) / separation * 0.01;
+                            let nx = sdx / dist, ny = sdy / dist;
+                            d.rx += nx * push; d.ry += ny * push;
+                            e.rx -= nx * push; e.ry -= ny * push;
+                        }
+                    }
+                }
             }
         }
     }
 
     // 6c5. 建筑碰撞分离（只对城市生效，碰撞箱=选中圈大小）
+    // 战略缩放时裁剪小城市（仅首都/大城市参与），减少 O(城×师) 开销
     {
         let bEffZoom = typeof zoom !== 'undefined' ? Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8) : 1.8;
         let PPD = typeof PIXELS_PER_DEGREE !== 'undefined' ? PIXELS_PER_DEGREE : 100;
@@ -989,7 +1008,9 @@ moveUnits = function(days) {
             for (let city of CITIES) {
                 let cityData = G.cities[city.id];
                 if (!cityData || cityData.hp <= 0) continue;
+                if (!city.isCapital && (typeof zoom === 'undefined' || zoom <= 0.35)) continue;
                 let isMajor = (typeof _MAJOR_CITIES !== 'undefined' && _MAJOR_CITIES.has(city.id)) || (typeof isMajorCity === 'function' && isMajorCity(city.id));
+                if (!city.isCapital && !isMajor && (typeof zoom === 'undefined' || zoom <= 0.7)) continue;
                 // 选中圈=碰撞箱=点击圈：首都 2.5*effZoom，大城市 4.5*effZoom，小城市 2.5*effZoom
                 let selR = city.isCapital ? 2.5 * bEffZoom : (isMajor ? 4.5 * bEffZoom : 2.5 * bEffZoom);
                 let bR = selR / (zoom * PPD);

@@ -17,9 +17,13 @@ window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
 
 // ---- 坐标变换 ----
-function worldToScreen(wx, wy) {
+// out 参数：热点循环传入复用数组，避免每帧数万次小数组分配
+function worldToScreen(wx, wy, out) {
     const s = zoom * PIXELS_PER_DEGREE;
-    return [(wx - camX) * s + canvas.width / 2, -(wy - camY) * s + canvas.height / 2];
+    const cx = (wx - camX) * s + canvas.width / 2;
+    const cy = -(wy - camY) * s + canvas.height / 2;
+    if (out) { out[0] = cx; out[1] = cy; return out; }
+    return [cx, cy];
 }
 
 
@@ -492,6 +496,29 @@ const _MAJOR_CITIES = new Set([
     'luxembourg',
 ]);
 
+// 城市名称标签离屏缓存：烘焙 文字+阴影 一次，每帧 drawImage（替代每城两次 fillText）
+const _cityLabelCache = {};
+function _cityLabel(city, font, nameColor) {
+    let k = city.id + '|' + font + '|' + nameColor;
+    let s = _cityLabelCache[k];
+    if (s) return s;
+    let tc = document.createElement('canvas');
+    let tg = tc.getContext('2d');
+    tg.font = font;
+    let tw = Math.ceil(tg.measureText(city.name).width);
+    let th = 16;
+    tc.width = tw + 4; tc.height = th;
+    tg.font = font;
+    tg.textAlign = 'left'; tg.textBaseline = 'top';
+    tg.fillStyle = 'rgba(0,0,0,0.5)';
+    tg.fillText(city.name, 3, 3);
+    tg.fillStyle = nameColor;
+    tg.fillText(city.name, 2, 2);
+    s = { c: tc, w: tw + 4, h: th };
+    _cityLabelCache[k] = s;
+    return s;
+}
+
 function drawCities() {
     // 缩放层级：首都最早显示，较大城市次之，小城市最晚
     const capitalZoom = 0.15;
@@ -502,8 +529,10 @@ function drawCities() {
     if (zoom <= capitalZoom) return;
 
     ctx.save();
+    let _cityScratch = [0, 0];
     for (let city of CITIES) {
-        const [sx, sy] = worldToScreen(city.lon, city.lat);
+        worldToScreen(city.lon, city.lat, _cityScratch);
+        const sx = _cityScratch[0], sy = _cityScratch[1];
         if (sx < -50 || sx > canvas.width + 50 || sy < -50 || sy > canvas.height + 50) continue;
 
         // 根据城市等级和缩放决定是否显示
@@ -573,15 +602,10 @@ function drawCities() {
             ctx.stroke();
         }
 
-        // City name below (手工阴影替代 shadowBlur，避免 Canvas 2D 软件渲染开销)
+        // City name below (预渲染标签：阴影+文字一次烘焙，每帧仅 drawImage)
         let nameY = sy - 10 + bImgSize * 0.58 + 12;
-        ctx.font = city.isCapital ? "bold 12px sans-serif" : "10px sans-serif";
-        ctx.textAlign = "center"; ctx.textBaseline = "top";
-        ctx.shadowColor = "transparent"; ctx.shadowBlur = 0;
-        ctx.fillStyle = "rgba(0,0,0,0.5)";
-        ctx.fillText(city.name, sx+1, nameY+1);
-        ctx.fillStyle = nameColor;
-        ctx.fillText(city.name, sx, nameY);
+        let lbl = _cityLabel(city, city.isCapital ? "bold 12px sans-serif" : "10px sans-serif", nameColor);
+        ctx.drawImage(lbl.c, sx - lbl.w / 2, nameY - 2);
 
         // HP bar — only show if damaged
         if (hp < maxHp) {
@@ -660,7 +684,7 @@ function drawCities() {
         // 驻军模式城市高亮（海军驻守时不亮城市，只亮海军节点）
         if (G.garrisonMode && G.garrisonUnitIds && G.garrisonUnitIds.length > 0) {
             let hasNavy = G.garrisonUnitIds.some(uid => {
-                let d = G.divisions.find(x => x.id === uid);
+                let d = (G._divIndex && G._divIndex.get(uid)) || G.divisions.find(x => x.id === uid);
                 return d && d.type === 'navy';
             });
             if (!hasNavy) {
@@ -699,13 +723,33 @@ function drawCities() {
     ctx.restore();
 }
 
+// 火焰 emoji 位图缓存（大字号 fillText 慢，烘焙后 drawImage 缩放）
+const _flameCache = {};
+function _flameSprite(size) {
+    let k = Math.max(12, (size | 0));
+    let s = _flameCache[k];
+    if (s) return s;
+    let tc = document.createElement('canvas');
+    tc.width = tc.height = k + 4;
+    let tg = tc.getContext('2d');
+    tg.font = k + "px sans-serif";
+    tg.textAlign = "center"; tg.textBaseline = "middle";
+    tg.fillText("🔥", tc.width / 2, tc.height / 2);
+    s = { c: tc, h: (k + 4) / 2 };
+    _flameCache[k] = s;
+    return s;
+}
+
 function drawFireZones() {
     if (!G.fireZones || G.fireZones.length === 0) return;
     ctx.save();
+    let _fzScratch = [0, 0];
     for (let fz of G.fireZones) {
-        let [sx, sy] = worldToScreen(fz.x, fz.y);
+        worldToScreen(fz.x, fz.y, _fzScratch);
+        let sx = _fzScratch[0], sy = _fzScratch[1];
         if (sx < -100 || sx > canvas.width + 100 || sy < -100 || sy > canvas.height + 100) continue;
-        let rPixels = Math.abs(worldToScreen(fz.x + fz.radius, fz.y)[0] - sx);
+        worldToScreen(fz.x + fz.radius, fz.y, _fzScratch);
+        let rPixels = Math.abs(_fzScratch[0] - sx);
         let alpha = Math.max(0.1, fz.life / fz.lifeMax);
         // 火焰红色范围 + 火焰emoji
         ctx.beginPath(); ctx.arc(sx, sy, rPixels, 0, Math.PI * 2);
@@ -714,10 +758,11 @@ function drawFireZones() {
         ctx.strokeStyle = "rgba(200,70,30," + (alpha * 0.5) + ")";
         ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
         ctx.stroke(); ctx.setLineDash([]);
-        // 火焰emoji
-        ctx.font = (rPixels * 0.8) + "px sans-serif";
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillText("🔥", sx, sy);
+        // 火焰emoji（预渲染位图，按整 8px 缩放）
+        let fs = _flameSprite(Math.round(rPixels * 0.8 / 8) * 8);
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(fs.c, sx - fs.h, sy - fs.h);
+        ctx.globalAlpha = 1;
     }
     ctx.restore();
 }
@@ -834,7 +879,7 @@ function drawNavalBases() {
         // 海军驻军模式高亮海军节点
         if (G.garrisonMode && G.garrisonUnitIds && G.garrisonUnitIds.length > 0) {
             let hasNavy = G.garrisonUnitIds.some(uid => {
-                let d = G.divisions.find(x => x.id === uid);
+                let d = (G._divIndex && G._divIndex.get(uid)) || G.divisions.find(x => x.id === uid);
                 return d && d.type === 'navy';
             });
             if (hasNavy) {
@@ -1316,11 +1361,62 @@ function drawTerrainMountainLayers() {
     }
 }
 
+// ===== 静态世界层离屏缓存 =====
+// 省份/海岸/河流/国境/山地/铁路 全部渲染到一张世界坐标画布；
+// 相机位移 < 24px 或缩放变化 < 0.02 时复用，每帧仅一次 drawImage。
+// 铁路版本（G._railVer）变化（修路/占领）强制重绘。
+let _worldLayer = null, _worldCam = null, _worldZoom = 0, _worldRailVer = -1, _worldMapVer = -1;
+function _drawStaticWorld() {
+    let w = canvas.width, h = canvas.height;
+    let s = zoom * PIXELS_PER_DEGREE;
+    let needRedraw = !_worldLayer || _worldLayer.width !== w || _worldLayer.height !== h ||
+        _worldZoom === 0 || Math.abs(zoom - _worldZoom) > 0.02 ||
+        _worldRailVer !== (G._railVer || 0) ||
+        _worldMapVer !== (G._mapVer || 0) ||
+        (_worldCam && Math.hypot((camX - _worldCam.x) * s, (camY - _worldCam.y) * s) > 24);
+    if (needRedraw) {
+        if (!_worldLayer) _worldLayer = document.createElement('canvas');
+        _worldLayer.width = w; _worldLayer.height = h;
+        let lctx = _worldLayer.getContext('2d');
+        let oldCtx = ctx;
+        ctx = lctx;
+        ctx.clearRect(0, 0, w, h);
+        if (typeof TERRAIN_BG_ENABLED === 'undefined' || TERRAIN_BG_ENABLED) {
+            if (terrainReady()) {
+                const tl = worldToScreen(-12, 72);
+                const br = worldToScreen(65, 33);
+                ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+            }
+        }
+        if (typeof PROVINCES !== 'undefined') {
+            drawProvinces();
+            drawCoastGrid();
+            drawRivers();
+            drawBorders();
+            drawTerrainMountainLayers();
+        }
+        drawRailways();
+        ctx = oldCtx;
+        _worldCam = { x: camX, y: camY };
+        _worldZoom = zoom;
+        _worldRailVer = G._railVer || 0;
+        _worldMapVer = G._mapVer || 0;
+    }
+    let dx = _worldCam ? canvas.width / 2 - (camX - _worldCam.x) * s : 0;
+    let dy = _worldCam ? canvas.height / 2 + (camY - _worldCam.y) * s : 0;
+    ctx.drawImage(_worldLayer, dx, dy);
+}
+
 function render() { window._sibBtns = []; window._sibFormBtn = []; window._sidePanelRect = {}; G._countryFlagBtns = []; window._railModalBtns = []; window._railModalRect = {};
     try {
     const w = canvas.width, h = canvas.height;
 
     ctx.clearRect(0, 0, w, h);
+
+    // 每帧共享师团索引：渲染路径内避免多次 O(N) find（前线叠层/驻军高亮/侧栏共用）
+    let _dix = new Map();
+    for (let x of G.divisions) { _dix.set(x.id, x); _dix.set('' + x.id, x); }
+    G._divIndex = _dix;
 
     // ===== UI-only 模式（Unity 渲染地图/单位，本层只画面板与 HUD） =====
     if (window.UI_ONLY_MODE) {
@@ -1376,15 +1472,8 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
         }
     }
 
-    // 直接绘制静态内容（无离屏缓存，避免缩放时重建开销）
-    if (typeof PROVINCES !== 'undefined') {
-        drawProvinces();
-        drawCoastGrid();
-        drawRivers();
-        drawBorders();
-        drawTerrainMountainLayers();
-    }
-    drawRailways();
+    // 静态世界层（省份/海岸/河流/国境/山地/铁路）离屏缓存，相机静止时零开销
+    _drawStaticWorld();
     drawGravestones();
     drawNavyGraves();
 

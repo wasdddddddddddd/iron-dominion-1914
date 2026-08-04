@@ -58,7 +58,7 @@ function drawCommanderBar() {
     window._cmdBarRect = { x: x0 - 4, y: barTop, w: barW + 8, h: CMD_BAR_H + 8 };
 
     ctx.save();
-    CT.drawPanel(ctx, x0 - 4, barTop, barW + 8, CMD_BAR_H + 8, { accentColor: "#8a6a3a", radius: 2 });
+    CT.drawPanel(ctx, x0 - 4, barTop, barW + 8, CMD_BAR_H + 8, { accentColor: "#8a6a3a", radius: 2, noShadow: true });
     ctx.fillStyle = "rgba(200,180,150,0.55)";
     ctx.font = "9px Georgia,serif";
     ctx.textAlign = "left"; ctx.textBaseline = "top";
@@ -76,6 +76,7 @@ function drawCommanderBar() {
             accentColor: isSel ? "#ffd700" : borderColor,
             radius: 2,
             fill: hovered ? "rgba(45,32,16,0.95)" : "rgba(28,20,10,0.9)",
+            noShadow: true,
         });
         if (isSel) {
             ctx.strokeStyle = "#ffd700"; ctx.lineWidth = 1.5;

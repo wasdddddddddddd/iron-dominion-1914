@@ -123,7 +123,11 @@
     // 计算某国资源总量与每城连接状态
     // 返回 { grain, iron, connected: {cityId:{byRail,bySea}}, connectedCount }
     // grain/iron = 已连接城市实时库存之和（粮食 c.grain / 铁矿 c.iron）
+    // 250ms TTL 缓存：库存/归属仅在 3 天 tick 或操作时变化，无需每帧重算铁路 BFS + 海军扫描
+    let _natCache = {}, _natCacheAt = 0;
     function calcNationalResources(country) {
+        let now = Date.now();
+        if (now - _natCacheAt < 250 && _natCache[country]) return _natCache[country];
         let empty = { grain: 0, iron: 0, connected: {}, connectedCount: 0 };
         if (!G.cities || !country) return empty;
         let capId = null;
@@ -149,12 +153,15 @@
                 count++;
             }
         }
-        return {
+        let res = {
             grain: grainSum,
             iron: ironSum,
             connected: connected,
             connectedCount: count,
         };
+        _natCache = { [country]: res };
+        _natCacheAt = now;
+        return res;
     }
 
     // 城市满仓后的盈余转移：转到最近的、铁路连接且有余量的本国城市

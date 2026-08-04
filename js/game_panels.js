@@ -459,32 +459,53 @@ function drawDivisions() {
     let _divByIdMap = new Map();
     for (let _x of G.divisions) _divByIdMap.set(_x.id, _x);
     // 1) Projectiles
+    // 预渲染辉光精灵缓存：避免每发炮弹 shadowBlur 软件渲染（每帧数十发×2次fill）
+    const _PROJ_SPRITES = {};
+    function _projSprite(fill, glow, r) {
+        let key = fill + '|' + glow + '|' + r;
+        let s = _PROJ_SPRITES[key];
+        if (s) return s;
+        let size = Math.max(10, Math.ceil(r * 7 + 6));
+        let c = document.createElement('canvas');
+        c.width = c.height = size;
+        let g = c.getContext('2d');
+        let h = size / 2;
+        let grad = g.createRadialGradient(h, h, r * 0.35, h, h, h);
+        grad.addColorStop(0, glow);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        g.fillStyle = grad;
+        g.fillRect(0, 0, size, size);
+        g.beginPath();
+        g.arc(h, h, r, 0, Math.PI * 2);
+        g.fillStyle = fill;
+        g.fill();
+        s = { c: c, h: h };
+        _PROJ_SPRITES[key] = s;
+        return s;
+    }
+    let _projScratch = [0, 0];
     if (G.projectiles) {
         for (let p of G.projectiles) {
-            let [px, py] = worldToScreen(p.x, p.y);
+            worldToScreen(p.x, p.y, _projScratch);
+            let px = _projScratch[0], py = _projScratch[1];
             if (px < -50 || px > canvas.width+50 || py < -50 || py > canvas.height+50) continue;
-            ctx.save();
             if (p.type === 'artillery') {
-                let [sx, sy] = worldToScreen(p.startX, p.startY);
-                ctx.beginPath(); ctx.moveTo(sx, sy);
-                for (let i=1; i<=20; i++) {
-                    let t = i/20;
+                worldToScreen(p.startX, p.startY, _projScratch);
+                ctx.beginPath(); ctx.moveTo(_projScratch[0], _projScratch[1]);
+                for (let i=1; i<=12; i++) {
+                    let t = i/12;
                     let tx = p.startX + (p.endX - p.startX) * t;
                     let ty = p.startY + (p.endY - p.startY) * t + Math.sin(t*Math.PI) * (p.arcHeight || 0.3);
-                    let [ptx, pty] = worldToScreen(tx, ty);
-                    ctx.lineTo(ptx, pty);
+                    worldToScreen(tx, ty, _projScratch);
+                    ctx.lineTo(_projScratch[0], _projScratch[1]);
                 }
                 ctx.strokeStyle = "rgba(255,200,50,0.12)"; ctx.lineWidth = 1; ctx.setLineDash([3,4]);
                 ctx.stroke(); ctx.setLineDash([]);
             }
             let r = p.type === 'artillery' ? 4 : p.torpedo ? 4 : 2.5;
-            ctx.beginPath(); ctx.arc(px, py, r, 0, Math.PI*2);
-            ctx.fillStyle = p.torpedo ? "#44aaff" : (p.red ? "#ff4444" : "#ffcc00");
-            ctx.fill();
-            ctx.shadowColor = p.torpedo ? "#4488ff" : (p.red ? "#ff4444" : "#ffaa00");
-            ctx.shadowBlur = p.torpedo ? 8 : 10;
-            ctx.fill(); ctx.shadowBlur = 0;
-            ctx.restore();
+            let spr = _projSprite(p.torpedo ? "#44aaff" : (p.red ? "#ff4444" : "#ffcc00"),
+                                  p.torpedo ? "#4488ff" : (p.red ? "#ff4444" : "#ffaa00"), r);
+            ctx.drawImage(spr.c, px - spr.h, py - spr.h);
         }
     }
     // 2) Units - fixed pixel size regardless of zoom
@@ -549,6 +570,7 @@ function drawDivisions() {
     let _selSet = new Set(G.selectedDivisions || []);
     let _nowMs = performance.now();
     const _cw = canvas.width, _ch = canvas.height;
+    let _unitScratch = [0, 0];
     ctx.save(); // 外移：一次性保存，避免每单位save/restore
     for (let div of G.divisions) {        let rx = (div.rx!==undefined) ? div.rx : null;
         let ry = (div.ry!==undefined) ? div.ry : null;
@@ -557,7 +579,8 @@ function drawDivisions() {
             if (!pd||!pd.center) continue;
             rx = pd.center[0]; ry = pd.center[1];
         }
-        let [sx, sy] = worldToScreen(rx, ry);
+        worldToScreen(rx, ry, _unitScratch);
+        let sx = _unitScratch[0], sy = _unitScratch[1];
         if (sx < -100 || sx > _cw + 100 || sy < -100 || sy > _ch + 100) continue;
         let isPlayer = div.country === G.playerCountry;
         let isSel = _selSet.has(div.id);
@@ -2765,7 +2788,7 @@ function drawMilitaryPanel(py, ph, startX) {
     }
 
     // Selected units info
-    let selDivs = G.selectedDivisions.map(id => G.divisions.find(d => d.id === id)).filter(d => d);
+    let selDivs = G.selectedDivisions.map(id => (G._divIndex && G._divIndex.get(id)) || G.divisions.find(d => d.id === id)).filter(d => d);
     if (selDivs.length > 0) {
         let sy = agY + 35;
         ctx.font = "bold 11px Georgia,serif";
@@ -2793,7 +2816,7 @@ function drawMilitaryPanel(py, ph, startX) {
         let patrolX = startX + TAB_BTN_W * 2 + 30;
         let btnW = 130;
         let anyPatrol = G.selectedDivisions.some(did => {
-            let d = G.divisions.find(x => x.id === did);
+            let d = (G._divIndex && G._divIndex.get(did)) || G.divisions.find(x => x.id === did);
             return d && G.patrolTargets[d.id] && G.patrolTargets[d.id].length > 0;
         });
         if (anyPatrol) {

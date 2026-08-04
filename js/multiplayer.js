@@ -758,11 +758,15 @@ window.MP = (function() {
 
         // 城市
         if (state.cities) {
+            let ownerChanged = false;
             for (let cid in state.cities) {
                 if (G.cities[cid]) {
+                    if (state.cities[cid].owner !== G.cities[cid].owner) ownerChanged = true;
                     Object.assign(G.cities[cid], state.cities[cid]);
                 }
             }
+            // 省份着色随占领变化：静态世界层据此重绘
+            if (ownerChanged) G._mapVer = (G._mapVer || 0) + 1;
         }
 
         // 省份归属
@@ -842,6 +846,7 @@ window.MP = (function() {
             G.commanderState.chiefs = { ...(state.commanderState.chiefs || {}) };
             G.commanderState.commanderPool = { ...(state.commanderState.commanderPool || {}) };
             G.commanderState.chiefPool = { ...(state.commanderState.chiefPool || {}) };
+            if (typeof _markGroupsDirty === 'function') _markGroupsDirty(G.commanderState);
         }
 
         // 玩家修建的铁路 + 建造队列（客户端不跑模拟，必须用 Host 数据渲染与运兵）

@@ -29,6 +29,7 @@ function pruneBrokenGroups() {
     for (let g of cs.groups) {
         g.divisionIds = (g.divisionIds || []).filter(did => G.divisions.some(d => d.id === did));
     }
+    _markGroupsDirty(cs);
 }
 
 // ==== 数据查询 ====
@@ -61,10 +62,32 @@ function getAuraList(chief) {
     return Array.isArray(a) ? a : [a];
 }
 
+// 师→集团军 查找缓存：避免每帧 O(集团军×师) includes 扫描
+// cs._grpVer 在每次 groups 结构变更时 +1，缓存按 (cs 对象, 版本号) 惰性重建
+let _divGroupCacheCs = null, _divGroupCacheVer = -1, _divGroupCache = null;
+
+function _markGroupsDirty(cs) {
+    if (cs) cs._grpVer = (cs._grpVer || 0) + 1;
+}
+
 function getGroupOfDivision(divId) {
     let cs = G.commanderState;
     if (!cs) return null;
-    return cs.groups.find(g => g.divisionIds.includes(divId)) || null;
+    let ver = cs._grpVer || 0;
+    if (_divGroupCacheCs !== cs || _divGroupCacheVer !== ver) {
+        let m = new Map();
+        for (let g of cs.groups) {
+            let ids = g.divisionIds;
+            if (!ids) continue;
+            for (let i = 0; i < ids.length; i++) {
+                if (!m.has(ids[i])) m.set(ids[i], g);
+            }
+        }
+        _divGroupCache = m;
+        _divGroupCacheCs = cs;
+        _divGroupCacheVer = ver;
+    }
+    return _divGroupCache.get(divId) || null;
 }
 
 function getGroupById(groupId) {
@@ -207,6 +230,7 @@ function createArmyGroup(code, commanderId, divIds) {
         if (d) d.armyGroupId = group.id;
     }
     cs.groups.push(group);
+    _markGroupsDirty(cs);
     return { ok: true, group: group };
 }
 
@@ -222,6 +246,7 @@ function disbandArmyGroup(groupId) {
         if (d) d.armyGroupId = null;
     }
     cs.groups.splice(gi, 1);
+    _markGroupsDirty(cs);
     returnGroupCommander(group);
     return { ok: true };
 }
@@ -279,6 +304,7 @@ function addDivisionToGroup(divId, groupId) {
     if (old) removeDivInternal(old, divId);
     group.divisionIds.push(divId);
     d.armyGroupId = group.id;
+    _markGroupsDirty(cs);
     return { ok: true, group: group };
 }
 
@@ -288,6 +314,7 @@ function removeDivInternal(group, divId) {
     if (i >= 0) group.divisionIds.splice(i, 1);
     let d = G.divisions.find(x => x.id === divId);
     if (d) d.armyGroupId = null;
+    _markGroupsDirty(G.commanderState);
 }
 
 // 单位死亡时调用（静默清理）
