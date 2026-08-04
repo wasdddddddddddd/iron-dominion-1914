@@ -1405,8 +1405,8 @@ function _drawStaticWorld() {
         _worldRailVer = G._railVer || 0;
         _worldMapVer = G._mapVer || 0;
     }
-    let dx = _worldCam ? canvas.width / 2 - (camX - _worldCam.x) * s : 0;
-    let dy = _worldCam ? canvas.height / 2 + (camY - _worldCam.y) * s : 0;
+    let dx = _worldCam ? (_worldCam.x - camX) * s : 0;
+    let dy = _worldCam ? (camY - _worldCam.y) * s : 0;
     ctx.drawImage(_worldLayer, dx, dy);
 }
 
