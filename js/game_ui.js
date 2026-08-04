@@ -1362,26 +1362,32 @@ function drawTerrainMountainLayers() {
 }
 
 // ===== 静态世界层离屏缓存 =====
-// 省份/海岸/河流/国境/山地/铁路 全部渲染到一张世界坐标画布；
-// 相机位移 < 24px 或缩放变化 < 0.02 时复用，每帧仅一次 drawImage。
-// 铁路版本（G._railVer）变化（修路/占领）强制重绘。
+// 省份/海岸/河流/国境/山地/铁路 渲染到一张 1.5× 屏幕的离屏画布；
+// 相机可在层内自由平移（每帧仅 1 次 drawImage），仅当相机逼近层边缘
+// （各方向 1/4 屏）或缩放变化 > 0.02 / 铁路版本 / 地图版本变化时才重烘焙。
 let _worldLayer = null, _worldCam = null, _worldZoom = 0, _worldRailVer = -1, _worldMapVer = -1;
 function _drawStaticWorld() {
     let w = canvas.width, h = canvas.height;
     let s = zoom * PIXELS_PER_DEGREE;
-    let needRedraw = !_worldLayer || _worldLayer.width !== w || _worldLayer.height !== h ||
+    // 每边留白 ≈ 25% 屏宽/高（至少 160px），烘焙画布 = w+2padX × h+2padY
+    let padX = Math.max(160, Math.round(w * 0.25));
+    let padY = Math.max(160, Math.round(h * 0.25));
+    let W = w + padX * 2, H = h + padY * 2;
+    let needRedraw = !_worldLayer || _worldLayer.width !== W || _worldLayer.height !== H ||
         _worldZoom === 0 || Math.abs(zoom - _worldZoom) > 0.02 ||
         _worldRailVer !== (G._railVer || 0) ||
         _worldMapVer !== (G._mapVer || 0) ||
-        (_worldCam && Math.hypot((camX - _worldCam.x) * s, (camY - _worldCam.y) * s) > 24);
+        !_worldCam || Math.abs((camX - _worldCam.x) * s) > padX || Math.abs((camY - _worldCam.y) * s) > padY;
     if (needRedraw) {
         if (!_worldLayer) _worldLayer = document.createElement('canvas');
-        _worldLayer.width = w; _worldLayer.height = h;
+        _worldLayer.width = W; _worldLayer.height = H;
         let lctx = _worldLayer.getContext('2d');
         let oldCtx = ctx;
         ctx = lctx;
         try {
-            ctx.clearRect(0, 0, w, h);
+            ctx.clearRect(0, 0, W, H);
+            // 平移：让"当前视野"落在放大画布正中央，四周各留 pad 余量供平移
+            ctx.translate(padX, padY);
             if (typeof TERRAIN_BG_ENABLED === 'undefined' || TERRAIN_BG_ENABLED) {
                 if (terrainReady()) {
                     const tl = worldToScreen(-12, 72);
@@ -1405,8 +1411,9 @@ function _drawStaticWorld() {
         _worldRailVer = G._railVer || 0;
         _worldMapVer = G._mapVer || 0;
     }
-    let dx = _worldCam ? (_worldCam.x - camX) * s : 0;
-    let dy = _worldCam ? (camY - _worldCam.y) * s : 0;
+    // 视窗居中在放大画布内（-pad 偏移），再按相机位移平移
+    let dx = _worldCam ? -padX + (_worldCam.x - camX) * s : 0;
+    let dy = _worldCam ? -padY + (camY - _worldCam.y) * s : 0;
     ctx.drawImage(_worldLayer, dx, dy);
 }
 
