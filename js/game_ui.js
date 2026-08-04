@@ -1380,23 +1380,26 @@ function _drawStaticWorld() {
         let lctx = _worldLayer.getContext('2d');
         let oldCtx = ctx;
         ctx = lctx;
-        ctx.clearRect(0, 0, w, h);
-        if (typeof TERRAIN_BG_ENABLED === 'undefined' || TERRAIN_BG_ENABLED) {
-            if (terrainReady()) {
-                const tl = worldToScreen(-12, 72);
-                const br = worldToScreen(65, 33);
-                ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+        try {
+            ctx.clearRect(0, 0, w, h);
+            if (typeof TERRAIN_BG_ENABLED === 'undefined' || TERRAIN_BG_ENABLED) {
+                if (terrainReady()) {
+                    const tl = worldToScreen(-12, 72);
+                    const br = worldToScreen(65, 33);
+                    ctx.drawImage(window.TERRAIN_IMG, tl[0], tl[1], br[0] - tl[0], br[1] - tl[1]);
+                }
             }
+            if (typeof PROVINCES !== 'undefined') {
+                drawProvinces();
+                drawCoastGrid();
+                drawRivers();
+                drawBorders();
+                drawTerrainMountainLayers();
+            }
+            drawRailways();
+        } finally {
+            ctx = oldCtx;
         }
-        if (typeof PROVINCES !== 'undefined') {
-            drawProvinces();
-            drawCoastGrid();
-            drawRivers();
-            drawBorders();
-            drawTerrainMountainLayers();
-        }
-        drawRailways();
-        ctx = oldCtx;
         _worldCam = { x: camX, y: camY };
         _worldZoom = zoom;
         _worldRailVer = G._railVer || 0;
