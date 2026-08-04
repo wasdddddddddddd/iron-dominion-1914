@@ -20,6 +20,29 @@ let _pfReq = [];
 let _pfCount = 0;
 let _pfCtx = null; // { country } — 外交上下文，在 A* / 移动时传给 costFn
 
+// 每帧 A* 总迭代预算（约 1-2ms）；单搜索切片 4000 迭代
+const PF_FRAME_BUDGET = 40000;
+const PF_SEARCH_SLICE = 4000;
+// 路径缓存：同目标+同起始区域(8×8格≈0.32°)+同国家共享，命中后逐段重新校验
+const PF_CACHE_TTL = 2000;
+let _pfCache = new Map();
+function _pfCacheValid(wp, isNavy, fromX, fromY) {
+    let prevX = fromX, prevY = fromY;
+    for (let i = 0; i < wp.length; i++) {
+        const b = wp[i];
+        const dx = b.x - prevX, dy = b.y - prevY;
+        const dist = Math.hypot(dx, dy);
+        let steps = Math.max(1, Math.ceil(dist / PF_CELL));
+        for (let s = 1; s <= steps; s++) {
+            const t = s / steps;
+            const px = prevX + dx * t, py = prevY + dy * t;
+            if (isNavy ? !_onNavyGrid(px, py) : !_onLandGrid(px, py)) return false;
+        }
+        prevX = b.x; prevY = b.y;
+    }
+    return true;
+}
+
 function cellIdx(cx, cy) { return cy * gPF.cols + cx; }
 function lon2c(lon) { return Math.floor((lon - gPF.minLon) / PF_CELL); }
 function lat2c(lat) { return Math.floor((lat - gPF.minLat) / PF_CELL); }
@@ -83,6 +106,16 @@ function buildPF() {
     let n = cols * rows;
     // 先赋值给 gPF，后续 c2lon/c2lat 才能用
     gPF = { cols, rows, minLon, minLat, land: null, cost: null };
+    // A* 零分配工作区（版本化数组 + 预分配堆）
+    // 注意：_aG/_heapF 必须 float64 —— float32 存值四舍五入后，与 float64 计算出的 ng 比较会产生
+    // 1e-8 级伪重松弛，堆被重复条目淹没，搜索空转
+    _aG = new Float64Array(n);
+    _aP = new Int32Array(n);
+    _aSt = new Int32Array(n);
+    _aClosed = new Int32Array(n);
+    _heapF = new Float64Array(_HEAP_CAP);
+    _heapIdx = new Int32Array(_HEAP_CAP);
+    _aVer = 0; _heapLen = 0; _pfBudgetLeft = 0;
     let land = new Uint8Array(n);
     let cost = new Float32Array(n);
     // 离线标定：陆海 + 所属省份
@@ -282,45 +315,52 @@ function buildPF() {
     gPF.navyLand = navyLand; gPF.navyCost = navyCost;
 }
 
-// ===== 2. A* 寻路 =====
-let _astarOpen = []; let _astarG = {}; let _astarParent = {}; let _astarVisited = new Set();
-function _aClear() { _astarOpen.length = 0; _astarG = {}; _astarParent = {}; _astarVisited.clear(); }
+// ===== 2. A* 寻路（零分配版：版本化数组 + 预分配堆，替代每搜索数万小对象） =====
+// _aG  g 值；_aP 父节点索引(-1=无)；_aSt 版本戳（==_aVer 表示 _aG/_aP 有效）；_aClosed 已扩展标记
+let _aG = null, _aP = null, _aSt = null, _aClosed = null;
+let _aVer = 0;
+let _lastIters = 0;
+let _lastHeapPeak = 0;
+const _HEAP_CAP = 131072;
+let _heapF = null, _heapIdx = null, _heapLen = 0;
+let _lastPopF = 0;
+// 每帧 A* 迭代预算（6e 设置，_aStarGeneric 逐迭代消耗，到 0 即返回最优可行部分路径）
+let _pfBudgetLeft = 0;
 
-// 二叉堆（最小 f 值优先）
-function _heapPush(h, v) {
-    h.push(v);
-    let i = h.length - 1;
+function _heapPush(idx, f) {
+    let i = _heapLen++;
+    if (i > _lastHeapPeak) _lastHeapPeak = i;
+    _heapIdx[i] = idx; _heapF[i] = f;
     while (i > 0) {
         let p = (i - 1) >> 1;
-        if (h[p].f <= h[i].f) break;
-        [h[p], h[i]] = [h[i], h[p]];
+        if (_heapF[p] <= _heapF[i]) break;
+        let t = _heapIdx[i]; _heapIdx[i] = _heapIdx[p]; _heapIdx[p] = t;
+        let tf = _heapF[i]; _heapF[i] = _heapF[p]; _heapF[p] = tf;
         i = p;
     }
 }
-function _heapPop(h) {
-    if (h.length <= 1) return h.pop();
-    let t = h[0];
-    h[0] = h.pop();
-    let i = 0, n = h.length;
-    while (true) {
-        let m = i, l = (i << 1) + 1, r = (i << 1) + 2;
-        if (l < n && h[l].f < h[m].f) m = l;
-        if (r < n && h[r].f < h[m].f) m = r;
-        if (m === i) break;
-        [h[i], h[m]] = [h[m], h[i]];
-        i = m;
+function _heapPop() {
+    _lastPopF = _heapF[0];
+    let top = _heapIdx[0];
+    let ln = --_heapLen;
+    if (ln > 0) {
+        _heapIdx[0] = _heapIdx[ln]; _heapF[0] = _heapF[ln];
+        let i = 0;
+        while (true) {
+            let m = i, l = (i << 1) + 1, r = (i << 1) + 2;
+            if (l < ln && _heapF[l] < _heapF[m]) m = l;
+            if (r < ln && _heapF[r] < _heapF[m]) m = r;
+            if (m === i) break;
+            let t = _heapIdx[i]; _heapIdx[i] = _heapIdx[m]; _heapIdx[m] = t;
+            let tf = _heapF[i]; _heapF[i] = _heapF[m]; _heapF[m] = tf;
+            i = m;
+        }
     }
-    return t;
+    return top;
 }
 
-function aStar(sx, sy, ex, ey) {
-    return _aStarGeneric(sx, sy, ex, ey, isWalkable, cellCost);
-}
-function navyAStar(sx, sy, ex, ey) {
-    return _aStarGeneric(sx, sy, ex, ey, navyIsWalkable, navyCellCost);
-}
 function _aStarGeneric(sx, sy, ex, ey, wlkFn, costFn, skipDiag) {
-    if (!gPF) return null;
+    if (!gPF || !gPF.land || !_aP) return null;
     sx = Math.max(0, Math.min(gPF.cols - 1, sx));
     sy = Math.max(0, Math.min(gPF.rows - 1, sy));
     ex = Math.max(0, Math.min(gPF.cols - 1, ex));
@@ -328,62 +368,74 @@ function _aStarGeneric(sx, sy, ex, ey, wlkFn, costFn, skipDiag) {
     if (!wlkFn(sx, sy)) return null;
     if (sx === ex && sy === ey) return [];
 
-    _aClear();
-    let k = (x, y) => (x << 16) | y;
-    let sk = k(sx, sy), ek = k(ex, ey);
-
-    _astarG[sk] = 0;
-    _astarParent[sk] = null;
+    // 新搜索：版本戳 +1（防溢出全清），堆清空
+    if (++_aVer >= 2000000000) { _aVer = 1; _aSt.fill(0); }
+    _heapLen = 0;
+    _lastHeapPeak = 0;
+    const cols = gPF.cols;
+    const sk = sy * cols + sx, ek = ey * cols + ex;
+    _aSt[sk] = _aVer; _aG[sk] = 0; _aP[sk] = -1;
     let adx = sx > ex ? sx - ex : ex - sx, ady = sy > ey ? sy - ey : ey - sy;
-    let h0 = adx < ady ? adx * 0.414 + ady : ady * 0.414 + adx;
-    _heapPush(_astarOpen, { x: sx, y: sy, f: h0 });
-
-    let dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
+    const h0 = adx < ady ? adx * 0.414 + ady : ady * 0.414 + adx;
+    _heapPush(sk, h0);
     let iters = 0;
     let bestKey = sk, bestDist = h0;
+    const dirs = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]];
 
-    while (_astarOpen.length && iters < MAX_ASTAR_ITER) {
+    while (_heapLen && iters < MAX_ASTAR_ITER && _pfBudgetLeft > 0) {
         iters++;
-        let cur = _heapPop(_astarOpen);
-        let ck = k(cur.x, cur.y);
-        if (ck === ek) { bestKey = ek; break; }
-        if (_astarVisited.has(ck)) continue;
-        _astarVisited.add(ck);
+        _pfBudgetLeft--;
+        const ci = _heapPop();
+        if (ci === ek) { bestKey = ek; break; }
+        if (_aClosed[ci] === _aVer) continue;
+        const cx = ci % cols, cy = (ci / cols) | 0;
+        const hx = cx > ex ? cx - ex : ex - cx, hy = cy > ey ? cy - ey : ey - cy;
+        const h = hx < hy ? hx * 0.414 + hy : hy * 0.414 + hx;
+        // 陈旧条目检测（节点被更低 g 重新松弛后会再压入新条目）：f 与当前 g+h 不符则跳过
+        if (Math.abs(_lastPopF - (_aG[ci] + h)) > 0.25) continue;
+        if (h < bestDist) { bestDist = h; bestKey = ci; }
+        _aClosed[ci] = _aVer;
 
-        let ddx = cur.x > ex ? cur.x - ex : ex - cur.x;
-        let ddy = cur.y > ey ? cur.y - ey : ey - cur.y;
-        let d2t = ddx < ddy ? ddx * 0.414 + ddy : ddy * 0.414 + ddx;
-        if (d2t < bestDist) { bestDist = d2t; bestKey = ck; }
-
-        for (let d of dirs) {
-            let nx = cur.x + d[0], ny = cur.y + d[1];
+        const gci = _aG[ci];
+        for (let d = 0; d < 8; d++) {
+            const nx = cx + dirs[d][0], ny = cy + dirs[d][1];
+            if (nx < 0 || nx >= gPF.cols || ny < 0 || ny >= gPF.rows) continue;
             if (!wlkFn(nx, ny)) continue;
-            if (!skipDiag && d[0] !== 0 && d[1] !== 0) {
-                if (!wlkFn(cur.x + d[0], cur.y) && !wlkFn(cur.x, cur.y + d[1])) continue;
+            if (!skipDiag && d >= 4) {
+                if (!wlkFn(cx + dirs[d][0], cy) && !wlkFn(cx, cy + dirs[d][1])) continue;
             }
-            let nk = k(nx, ny);
-            if (_astarVisited.has(nk)) continue;
-            let moveCost = (d[0] !== 0 && d[1] !== 0) ? 1.414 : 1.0;
-            let ng = _astarG[ck] + moveCost * costFn(nx, ny);
-            if (ng < (_astarG[nk] || Infinity)) {
-                _astarG[nk] = ng;
-                _astarParent[nk] = { x: cur.x, y: cur.y };
-                let hdx = nx > ex ? nx - ex : ex - nx, hdy = ny > ey ? ny - ey : ey - ny;
-                let h = hdx < hdy ? hdx * 0.414 + hdy : hdy * 0.414 + hdx;
-                _heapPush(_astarOpen, { x: nx, y: ny, f: ng + h });
+            const nk = ny * cols + nx;
+            const moveCost = d >= 4 ? 1.414 : 1.0;
+            const ng = gci + moveCost * costFn(nx, ny);
+            if (_aClosed[nk] === _aVer) continue; // 已扩展节点 g 已最优（一致性启发），跳过
+            if (_aSt[nk] !== _aVer || ng < _aG[nk]) {
+                _aSt[nk] = _aVer; _aG[nk] = ng; _aP[nk] = ci;
+                const hdx = nx > ex ? nx - ex : ex - nx, hdy = ny > ey ? ny - ey : ey - ny;
+                const hh = hdx < hdy ? hdx * 0.414 + hdy : hdy * 0.414 + hdx;
+                _heapPush(nk, ng + hh);
             }
         }
     }
 
-    let endKey = _astarParent[ek] ? ek : bestKey;
-    if (!_astarParent[endKey] && endKey !== sk) return null;
+    const endKey = (_aSt[ek] === _aVer && _aP[ek] >= 0) ? ek : bestKey;
+    _lastIters = iters;
     if (endKey === sk) return [];
-
-    let path = [];
-    let p = { x: endKey >> 16, y: endKey & 0xFFFF };
-    while (p) { path.push(p); p = _astarParent[k(p.x, p.y)]; }
+    if (_aP[endKey] < 0) return null;
+    const path = [];
+    let p = endKey;
+    while (p >= 0) {
+        path.push({ x: p % cols, y: (p / cols) | 0 });
+        p = _aP[p];
+    }
     path.reverse();
     return path;
+}
+
+function aStar(sx, sy, ex, ey) {
+    return _aStarGeneric(sx, sy, ex, ey, isWalkable, cellCost);
+}
+function navyAStar(sx, sy, ex, ey) {
+    return _aStarGeneric(sx, sy, ex, ey, navyIsWalkable, navyCellCost);
 }
 
 // ===== 3. 路径简化（去共线） =====
@@ -1073,11 +1125,14 @@ moveUnits = function(days) {
         }
     }
 
-    // 6e. 执行寻路
-    for (let i = 0; i < _pfReq.length && _pfCount < MAX_ASTAR_PER_FRAME; i++) {
+    // 6e. 执行寻路（共享每帧迭代预算 + 同目标/同区域/同国家路径缓存）
+    // 预算：A* 按迭代计费，本帧总迭代上限 PF_FRAME_BUDGET（约 1-2ms），
+    // 单个搜索切片 4000 迭代；切片用尽时返回最优可行部分路径，单位先移动、下帧续算。
+    let budget = PF_FRAME_BUDGET;
+    for (let i = 0; i < _pfReq.length && _pfCount < MAX_ASTAR_PER_FRAME && budget > 0; i++) {
         let r = _pfReq[i];
         let isNavy = r.navy;
-        let costArr = isNavy ? gPF.navyCost : gPF.cost;
+        let costArr = (gPF && (isNavy ? gPF.navyCost : gPF.cost)) || null;
         let blockedKey = isNavy ? '_navyBlockedCell' : '_blockedCell';
         // 卡死时封锁当前格
         if (r.d._stuck >= STUCK_FRAMES && gPF && costArr) {
@@ -1090,9 +1145,38 @@ moveUnits = function(days) {
                 }
             }
         }
-        _pfCtx = { country: r.d.country };
-        let wp = isNavy ? navyFindPathRaw(r.d.rx, r.d.ry, r.tx, r.ty) : findPathRaw(r.d.rx, r.d.ry, r.tx, r.ty);
-        _pfCtx = null;
+        // 路径缓存：起始格量化到 8×8 格（≈0.32°），同目标+同区域+同国家共享路径
+        let ckey = null;
+        let wp = null;
+        if (gPF) {
+            let ecx = lon2c(r.tx), ecy = lat2c(r.ty);
+            if (ecx >= 0 && ecx < gPF.cols && ecy >= 0 && ecy < gPF.rows) {
+                let qsx = Math.floor(lon2c(r.d.rx) / 8), qsy = Math.floor(lat2c(r.d.ry) / 8);
+                ckey = (isNavy ? 'n|' : 'l|') + qsx + ',' + qsy + '|' + ecx + ',' + ecy + '|' + r.d.country;
+                let ent = _pfCache.get(ckey);
+                if (ent && performance.now() - ent.at < PF_CACHE_TTL) {
+                    if (_pfCacheValid(ent.wp, isNavy, r.d.rx, r.d.ry)) {
+                        wp = ent.wp;
+                    } else {
+                        _pfCache.delete(ckey);
+                    }
+                }
+            }
+        }
+        if (!wp) {
+            _pfBudgetLeft = Math.min(PF_SEARCH_SLICE, budget);
+            _pfCtx = { country: r.d.country };
+            wp = isNavy ? navyFindPathRaw(r.d.rx, r.d.ry, r.tx, r.ty) : findPathRaw(r.d.rx, r.d.ry, r.tx, r.ty);
+            _pfCtx = null;
+            budget -= (PF_SEARCH_SLICE - Math.max(0, _pfBudgetLeft));
+            if (ckey && wp && wp.length > 0) {
+                if (_pfCache.size >= 256) {
+                    const fk = _pfCache.keys().next().value;
+                    if (fk !== undefined) _pfCache.delete(fk);
+                }
+                _pfCache.set(ckey, { wp: wp, at: performance.now() });
+            }
+        }
         if (r.d[blockedKey]) {
             let bc = r.d[blockedKey];
             if (bc.x >= 0 && bc.x < gPF.cols && bc.y >= 0 && bc.y < gPF.rows) {
@@ -1157,3 +1241,6 @@ function updatePathfinding(days) {}
 
 // ===== 9. 启动 =====
 if (typeof PROVINCES !== 'undefined') setTimeout(buildPF, 0);
+// 测试钩子：设置 A* 帧预算（生产环境由 moveUnits 6e 每帧管理）
+if (typeof window !== 'undefined') window._pfSetBudget = function (v) { _pfBudgetLeft = v; };
+if (typeof window !== 'undefined') window._pfDebug = function () { return { iters: _lastIters, heapPeak: _lastHeapPeak, budget: _pfBudgetLeft }; };
