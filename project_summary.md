@@ -423,9 +423,11 @@ js/command/
 - 顶部状态栏**不显示**总司令信息（仅显示国家/经济/军队/外交点数/日期速度）；总司令姓名与光环只在国别侧栏展示
 - 弹窗：编成/更换共用指挥官列表（含滚动条），解散需确认
 
-## 最近更新（2026-08-02）
+## 最近更新（2026-08-03）
 
-### 铁路运兵系统（git f7fff58）
+### 尝试转 Unity 失败
+
+### 铁路运兵系统（2026-08-02，git f7fff58）
 - **铁路网络**：`G.railways{}` 存铁路段（key 为 `城市A|城市B` 排序拼接）；段可用条件 = 两端城市归属己方/同盟/有军事通行权（`railwayUsable`）；被摧毁/易主的段不可用
 - **运兵流程**：选中陆军（排除海军/飞机）→ 铁路弹窗选目的站 → 部队先**步行接驳**（省份寻路避免穿越敌境，`stage:'walk_to_station'`）→ 到达起点站上车（`railwayPath` BFS 算路径，`stage:'on_train'`）→ 沿段快速移动（速度 = 兵种速度 ×2.5×`railSegmentMult`，山地段 `RAIL_MOUNTAIN_MULT=2.5`、平地段 `RAIL_SPEED_MULT=5`）→ 到站下车转 idle
 - **各自就近上车**：`fromCityId` 为 null 时每队独立找最近可用车站（`railNearestStation`）；参考站决定可达列表（`railwayReachableCities` BFS）

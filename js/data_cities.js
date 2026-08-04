@@ -262,7 +262,6 @@ const CITIES = [
     { id:'potsdam', name:'波茨坦', country:'GERMANY', lon:13.07, lat:52.40, isCapital:false },
     { id:'wittenberg', name:'维滕贝格', country:'GERMANY', lon:12.65, lat:51.87, isCapital:false },
     { id:'dessau', name:'德绍', country:'GERMANY', lon:12.24, lat:51.84, isCapital:false },
-    { id:'gelsenkirchen', name:'盖尔森基兴', country:'GERMANY', lon:7.10, lat:51.52, isCapital:false },
     { id:'bochum', name:'波鸿', country:'GERMANY', lon:7.21, lat:51.48, isCapital:false },
     { id:'duisburg', name:'杜伊斯堡', country:'GERMANY', lon:6.76, lat:51.43, isCapital:false },
     { id:'krefeld', name:'克雷费尔德', country:'GERMANY', lon:6.57, lat:51.34, isCapital:false },
@@ -320,8 +319,6 @@ const CITIES = [
     { id:'orenburg', name:'奥伦堡', country:'RUSSIA', lon:55.10, lat:51.77, isCapital:false },
     { id:'perm', name:'彼尔姆', country:'RUSSIA', lon:56.25, lat:58.01, isCapital:false },
     { id:'ekaterinburg', name:'叶卡捷琳堡', country:'RUSSIA', lon:60.60, lat:56.84, isCapital:false },
-    { id:'chelyabinsk', name:'车里雅宾斯克', country:'RUSSIA', lon:61.40, lat:55.16, isCapital:false },
-    { id:'omsk', name:'鄂木斯克', country:'RUSSIA', lon:73.37, lat:54.99, isCapital:false },
     { id:'innsbruck', name:'因斯布鲁克', country:'AUSTRIA_HUNGARY', lon:11.39, lat:47.27, isCapital:false },
     { id:'bregenz', name:'布雷根茨', country:'AUSTRIA_HUNGARY', lon:9.75, lat:47.50, isCapital:false },
     { id:'klagenfurt', name:'克拉根福特', country:'AUSTRIA_HUNGARY', lon:14.31, lat:46.62, isCapital:false },
@@ -383,7 +380,24 @@ const CITIES = [
     { id:'cambridge', name:'剑桥', country:'UK', lon:0.12, lat:52.21, isCapital:false },
     { id:'brighton', name:'布莱顿', country:'UK', lon:-0.14, lat:50.82, isCapital:false },
     { id:'exeter', name:'埃克塞特', country:'UK', lon:-3.53, lat:50.72, isCapital:false },
-    { id:'inverness', name:'因弗内斯', country:'UK', lon:-4.22, lat:57.48, isCapital:false }
+    { id:'inverness', name:'因弗内斯', country:'UK', lon:-4.22, lat:57.48, isCapital:false },
+    // ===== 1914 增补城市（资源系统扩展） =====
+    { id:'coventry', name:'考文垂', country:'UK', lon:-1.52, lat:52.41, isCapital:false },
+    { id:'valenciennes', name:'瓦朗谢讷', country:'FRANCE', lon:3.53, lat:50.36, isCapital:false },
+    { id:'dunkirk', name:'敦刻尔克', country:'FRANCE', lon:2.38, lat:51.05, isCapital:false },
+    { id:'zaporozhye', name:'扎波罗热', country:'RUSSIA', lon:35.14, lat:47.84, isCapital:false },
+    { id:'kherson', name:'赫尔松', country:'RUSSIA', lon:32.62, lat:46.64, isCapital:false },
+    { id:'zhitomir', name:'日托米尔', country:'RUSSIA', lon:28.67, lat:50.25, isCapital:false },
+    { id:'vinnitsa', name:'文尼察', country:'RUSSIA', lon:28.48, lat:49.23, isCapital:false },
+    { id:'chernovtsy', name:'切尔诺夫策', country:'RUSSIA', lon:25.93, lat:48.29, isCapital:false },
+    { id:'ivano_frankovsk', name:'伊万诺-弗兰科夫斯克', country:'RUSSIA', lon:24.71, lat:48.92, isCapital:false },
+    { id:'kaunas', name:'考纳斯', country:'RUSSIA', lon:23.90, lat:54.90, isCapital:false },
+    { id:'ostrava', name:'奥斯特拉瓦', country:'AUSTRIA_HUNGARY', lon:18.28, lat:49.82, isCapital:false },
+    { id:'ghent', name:'根特', country:'BELGIUM', lon:3.72, lat:51.05, isCapital:false },
+    { id:'esbjerg', name:'埃斯比约', country:'DENMARK', lon:8.45, lat:55.47, isCapital:false },
+    { id:'stara_zagora', name:'旧扎戈拉', country:'BULGARIA', lon:25.63, lat:42.43, isCapital:false },
+    { id:'larissa', name:'拉里萨', country:'GREECE', lon:22.42, lat:39.64, isCapital:false },
+    { id:'janina', name:'雅尼纳', country:'TURKEY', lon:20.85, lat:39.67, isCapital:false },
 ];
 
 // ============================================================

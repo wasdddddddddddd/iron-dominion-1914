@@ -178,86 +178,245 @@ function railwayUsable(a, b, country) {
         !!(G.militaryAccess[country] && G.militaryAccess[country][c]);
     return ok(oa) && ok(ob);
 }
+// 城市归属是否对 country 开放（用于穿过城市作为车站的判定）
+function railCityOpen(c, country) {
+    if (!c) return false;
+    let oc = c.owner !== undefined ? c.owner : c.country;
+    return oc === country ||
+        !!(G.alliances[country] && G.alliances[country][oc]) ||
+        !!(G.militaryAccess[country] && G.militaryAccess[country][oc]);
+}
+// 铁路段「穿过」城市的判定半径（度，≈16km）：铁路线须实际经过城市才算该城市接入铁路
+const RAIL_PASS_DIST = 0.15;
+function railDistToSegment(px, py, x1, y1, x2, y2) {
+    let dx = x2 - x1, dy = y2 - y1;
+    let len2 = dx * dx + dy * dy;
+    if (len2 === 0) return Math.hypot(px - x1, py - y1);
+    let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+// 被铁路段穿过的城市：{ segKey: [cityId, ...] }（惰性缓存，G.railways 变化时失效）
+let _railPassCache = null;
+function railPassThroughCities() {
+    if (_railPassCache) return _railPassCache;
+    _railPassCache = {};
+    for (let key in (G.railways || {})) {
+        let sep = key.indexOf('|');
+        let a = key.slice(0, sep), b = key.slice(sep + 1);
+        let cA = G.cities[a], cB = G.cities[b];
+        if (!cA || !cB) continue;
+        let passers = [];
+        for (let cid in G.cities) {
+            if (cid === a || cid === b) continue;
+            let c = G.cities[cid];
+            if (!c) continue;
+            if (railDistToSegment(c.lon, c.lat, cA.lon, cA.lat, cB.lon, cB.lat) < RAIL_PASS_DIST) passers.push(cid);
+        }
+        if (passers.length > 0) _railPassCache[key] = passers;
+    }
+    return _railPassCache;
+}
+// 展开铁路图（把被段穿过的城市展开为中间站）：{ adj: { cityId: [cityId, ...] } }
+let _railGraphCache = null;
+function railGraph(country) {
+    if (!_railGraphCache) _railGraphCache = {};
+    if (_railGraphCache[country]) return _railGraphCache[country];
+    let adj = {};
+    let add = (x, y) => {
+        if (x === y) return;
+        (adj[x] = adj[x] || []).push(y);
+        (adj[y] = adj[y] || []).push(x);
+    };
+    let pass = railPassThroughCities();
+    for (let key in (G.railways || {})) {
+        let sep = key.indexOf('|');
+        let a = key.slice(0, sep), b = key.slice(sep + 1);
+        if (!railwayUsable(a, b, country)) continue;
+        add(a, b);
+        let passers = pass[key] || [];
+        for (let cid of passers) {
+            let c = G.cities[cid];
+            if (!c) continue;
+            if (!railCityOpen(c, country)) continue;
+            add(a, cid);
+            add(b, cid);
+        }
+    }
+    _railGraphCache[country] = adj;
+    return adj;
+}
+function invalidateRailCaches() {
+    _railPassCache = null;
+    _railGraphCache = null;
+    _railNodeSetCache = null;
+}
 // 城市 → 沿己方可用的铁路段 BFS 可达的所有城市（补给链/运兵用）
 function railwayReachableCities(fromCityId, country) {
+    let adj = railGraph(country);
     let seen = new Set([fromCityId]);
     let q = [fromCityId];
     while (q.length) {
         let cur = q.pop();
-        for (let key in G.railways) {
-            let sep = key.indexOf('|');
-            let a = key.slice(0, sep), b = key.slice(sep + 1);
-            if (a !== cur && b !== cur) continue;
-            let nb = a === cur ? b : a;
-            if (seen.has(nb)) continue;
-            if (!railwayUsable(cur, nb, country)) continue;
-            seen.add(nb);
-            q.push(nb);
+        for (let nb of (adj[cur] || [])) {
+            if (!seen.has(nb)) { seen.add(nb); q.push(nb); }
         }
     }
     return seen;
 }
 
 // ===== 铁路运兵系统 =====
-// 所有铁路段的端点城市集合（惰性缓存）
+// 所有铁路节点（含被段穿过的中间站）的集合（惰性缓存）
 let _railNodeSetCache = null;
 function railCitySet() {
     if (_railNodeSetCache) return _railNodeSetCache;
     _railNodeSetCache = new Set();
-    for (let key in (G.railways || {})) {
-        let sep = key.indexOf('|');
-        _railNodeSetCache.add(key.slice(0, sep));
-        _railNodeSetCache.add(key.slice(sep + 1));
+    for (let country in (_railGraphCache || {})) {
+        for (let cid in _railGraphCache[country]) _railNodeSetCache.add(cid);
+    }
+    if (!_railGraphCache || Object.keys(_railGraphCache).length === 0) {
+        for (let key in (G.railways || {})) {
+            let sep = key.indexOf('|');
+            _railNodeSetCache.add(key.slice(0, sep));
+            _railNodeSetCache.add(key.slice(sep + 1));
+        }
     }
     return _railNodeSetCache;
 }
-// 城市是否有至少一条己方/盟国可用铁路段
+// 城市是否有至少一条己方/盟国可用铁路段（或为可用段的中间站）
 function railCityUsable(cid, country) {
-    let set = railCitySet();
-    if (!set.has(cid)) return false;
-    for (let key in G.railways) {
-        let sep = key.indexOf('|');
-        let a = key.slice(0, sep), b = key.slice(sep + 1);
-        if ((a === cid || b === cid) && railwayUsable(a, b, country)) return true;
-    }
-    return false;
+    let adj = railGraph(country);
+    return !!(adj[cid] && adj[cid].length > 0);
 }
-// 铁路路径（BFS 记录前驱）：返回 [fromCity, ..., toCity]，不可达返回 null
+// 铁路路径（BFS 记录前驱，穿过城市自动作为中间站）：返回 [fromCity, ..., toCity]，不可达返回 null
 function railwayPath(fromCityId, toCityId, country) {
     if (fromCityId === toCityId) return [fromCityId];
+    let adj = railGraph(country);
+    if (!adj[fromCityId]) return null;
     let prev = Object.create(null);
     prev[fromCityId] = null;
     let q = [fromCityId], qi = 0;
     while (qi < q.length) {
         let cur = q[qi++];
         if (cur === toCityId) break;
-        for (let key in G.railways) {
-            let sep = key.indexOf('|');
-            let a = key.slice(0, sep), b = key.slice(sep + 1);
-            if (a !== cur && b !== cur) continue;
-            let nb = a === cur ? b : a;
+        for (let nb of (adj[cur] || [])) {
             if (prev[nb] !== undefined) continue;
-            if (!railwayUsable(cur, nb, country)) continue;
             prev[nb] = cur;
             q.push(nb);
         }
     }
     if (prev[toCityId] === undefined) return null;
-    let path = [], cur = toCityId;
-    while (cur !== null) { path.push(cur); cur = prev[cur]; }
-    path.reverse();
-    return path;
+    let path = [];
+    for (let c = toCityId; c !== null; c = prev[c]) path.push(c);
+    return path.reverse();
 }
-// 部队出发前：找到最近的可用铁路站
+// 部队出发前：找到最近的可用铁路站（含被段穿过的中间站）
 function railNearestStation(rx, ry, country) {
     let best = null, bestD = Infinity;
-    for (let cid of railCitySet()) {
+    for (let cid in G.cities) {
         let c = G.cities[cid];
         if (!c || !railCityUsable(cid, country)) continue;
         let dd = Math.hypot(c.lon - rx, c.lat - ry);
         if (dd < bestD) { bestD = dd; best = cid; }
     }
     return best;
+}
+
+// ===== 修建铁路系统 =====
+// 玩家修建半径（度，≈198km；按一战铁路工程实际规模，不宜太大）
+var RAIL_BUILD_RADIUS = 1.78;
+// 费用/耗时随距离线性（世界度）
+var RAIL_COST_PER_DEG = 150;   // 每度 150 金币（1.78 度 ≈ 267）
+var RAIL_DAYS_PER_DEG = 8;     // 每度 8 天（1.78 度 ≈ 14 天）
+var RAIL_SEA_SAMPLE_STEP = 0.3; // 海洋检测采样步长（度）
+
+// 起点与目标间是否可修建：两端本国、半径内、未建段、直线不穿海
+function railBuildValid(fromId, toId) {
+    if (!fromId || !toId || fromId === toId) return false;
+    if (railwayExists(fromId, toId)) return false;
+    let cA = G.cities[fromId], cB = G.cities[toId];
+    if (!cA || !cB) return false;
+    if (G.playerCountry && (cA.owner !== G.playerCountry || cB.owner !== G.playerCountry)) return false;
+    let d = Math.hypot(cB.lon - cA.lon, cB.lat - cA.lat);
+    if (d > RAIL_BUILD_RADIUS) return false;
+    // 穿越海洋则不允许（沿线采样，任一点在海里即拒绝）
+    if (typeof isLandPoint === 'function') {
+        let steps = Math.max(2, Math.ceil(d / RAIL_SEA_SAMPLE_STEP));
+        for (let i = 0; i <= steps; i++) {
+            let t = i / steps;
+            let x = cA.lon + (cB.lon - cA.lon) * t;
+            let y = cA.lat + (cB.lat - cA.lat) * t;
+            if (!isLandPoint(x, y)) return false;
+        }
+    }
+    return true;
+}
+// 起点城市可修建的目标城市列表
+function railBuildCandidates(fromId) {
+    let out = [];
+    if (!fromId || !G.cities[fromId]) return out;
+    for (let cid in G.cities) {
+        if (cid === fromId) continue;
+        if (railBuildValid(fromId, cid)) out.push(cid);
+    }
+    return out;
+}
+// 半径内最近的可修建目标列表（按距离升序，最多 limit 个；高亮/点击用）
+function railNearestCandidates(fromId, limit) {
+    limit = (typeof limit === 'number' && limit > 0) ? limit : 3;
+    let from = G.cities[fromId];
+    if (!from) return [];
+    let list = [];
+    for (let cid of railBuildCandidates(fromId)) {
+        let c = G.cities[cid];
+        list.push({ id: cid, d: Math.hypot(c.lon - from.lon, c.lat - from.lat) });
+    }
+    list.sort((a, b) => a.d - b.d);
+    return list.slice(0, limit).map(x => x.id);
+}
+// 兼容旧调用：最近的一个候选
+function railNearestCandidate(fromId) {
+    let list = railNearestCandidates(fromId, 1);
+    return list.length ? list[0] : null;
+}
+// 花费/耗时：随距离线性
+function railBuildCost(fromId, toId) {
+    let cA = G.cities[fromId], cB = G.cities[toId];
+    let d = Math.hypot(cB.lon - cA.lon, cB.lat - cA.lat);
+    return { deg: d, cost: Math.max(100, Math.round(d * RAIL_COST_PER_DEG)), days: Math.max(10, Math.round(d * RAIL_DAYS_PER_DEG)) };
+}
+// 发起修建：扣款入队（Host 本地执行；联机客户端走 MP.sendAction）
+function startRailBuild(fromId, toId) {
+    if (!G.playerCountry) return { ok: false, reason: '无国家' };
+    if (!railBuildValid(fromId, toId)) return { ok: false, reason: '不符合修建条件（需本国城市、半径内、不穿海）' };
+    let info = railBuildCost(fromId, toId);
+    let cd = G.countries && G.countries[G.playerCountry];
+    if (!cd) return { ok: false, reason: '国家数据缺失' };
+    if (G.buildQueue && G.buildQueue.some(b => b.type === 'build_rail' && railwayKey(b.fromCityId, b.toCityId) === railwayKey(fromId, toId))) return { ok: false, reason: '该铁路段已在修建中' };
+    if (cd.treasury < info.cost) return { ok: false, reason: '金币不足（需 $' + info.cost + '）' };
+    cd.treasury -= info.cost;
+    if (!G.buildQueue) G.buildQueue = [];
+    let cA = G.cities[fromId], cB = G.cities[toId];
+    // cityId 用规范化段键（A-B 与 B-A 视为同一段，串行且不重复排队）
+    G.buildQueue.push({
+        type: 'build_rail', fromCityId: fromId, toCityId: toId,
+        cityId: 'rail_' + railwayKey(fromId, toId),
+        days: info.days, totalDays: info.days,
+        country: G.playerCountry,
+    });
+    addGameLog("🚂 开始修建铁路：" + cA.name + " — " + cB.name + "（" + info.days + "天 · $" + info.cost + "）");
+    return { ok: true };
+}
+// 修建完成：写入 G.railways 并失效相关缓存
+function completeRailBuild(item) {
+    let key = railwayKey(item.fromCityId, item.toCityId);
+    if (!G.railways) G.railways = {};
+    if (!G.railways[key]) G.railways[key] = { progress: 1, started: 0 };
+    invalidateRailCaches();
+    if (typeof invalidateRailMtnCache === 'function') invalidateRailMtnCache();
+    if (typeof cityMgrInvalidateCache === 'function') cityMgrInvalidateCache();
+    let cA = G.cities[item.fromCityId], cB = G.cities[item.toCityId];
+    addGameLog("🚂 铁路修建完成：" + (cA ? cA.name : item.fromCityId) + " — " + (cB ? cB.name : item.toCityId));
 }
 // 铁路段运兵速度倍率（山地段只有平地段一半）
 function railSegmentMult(a, b) {
@@ -703,8 +862,10 @@ function updateGame(dtMs) {
     // 经济/口粮按累计游戏天数结算（每3天一次），避免原 tick%floor(3/days) 只扣当帧天数的bug
     G.ecoAccum=(G.ecoAccum||0)+days;
     G.grainAccum=(G.grainAccum||0)+days;
+    let _resDays = Math.max(G.ecoAccum, G.grainAccum);
     if (G.ecoAccum>=3){ updateEconomy(G.ecoAccum); G.ecoAccum=0; }
     if (G.grainAccum>=3){ updateGrain(G.grainAccum); G.grainAccum=0; }
+    if (_resDays>=3 && typeof resUpdate==='function') resUpdate(_resDays);
     updateDivisions(days);
     updateNeutralCityCapture(days);
     updateFireZones(days);
@@ -1796,6 +1957,9 @@ function handleCityCapture(city) {
     }
     let newOwner = nearest ? nearest.country : null;
     if (!newOwner) { city.owner = null; city.hp = 0; return; }
+    // 城市易主：资源升级进度清零、等级/库存重置
+    if (newOwner !== city.owner && typeof resOnCityOwnerChange === 'function') resOnCityOwnerChange(city);
+    if (typeof cityMgrInvalidateCache === 'function') cityMgrInvalidateCache();
 
     // 中立城市被首次占领
     if (!city.owner) {
@@ -1926,10 +2090,10 @@ function processBuildQueue(dtMs) {
     let days=dtMs/(12000/speed);
     let q=G.buildQueue||[];
 
-    // 城市生产：每个城市只处理队列的第一个项目（串行，FIFO）
+    // 城市生产：每个城市只处理队列的第一个项目（串行，FIFO；铁路修建不占城市产能）
     let processedCities = {};
     for(let i=0;i<q.length;i++){
-        let cityKey = q[i].cityId;
+        let cityKey = q[i].cityId; // 铁路修建用 'rail_A_B' 键，不占城市产能
         if (processedCities[cityKey]) continue; // 该城市已有项目在处理中
         processedCities[cityKey] = true;
         q[i].days-=days;
@@ -1961,6 +2125,12 @@ function processBuildQueue(dtMs) {
                     }
                 }
                 addGameLog(q[i].cityName + " 已升级为大城市");
+            } else if (q[i].type === 'upgrade_grain' || q[i].type === 'upgrade_iron') {
+                // 粮食/铁矿升级完成
+                if (typeof resCompleteUpgrade === 'function') resCompleteUpgrade(q[i]);
+            } else if (q[i].type === 'build_rail') {
+                // 铁路修建完成
+                if (typeof completeRailBuild === 'function') completeRailBuild(q[i]);
             } else {
                 // 工厂建造完成
                 if(pd){
@@ -2090,16 +2260,19 @@ function rationsMaxFor(d) {
 }
 function updateGrain(days) {
     if (!G.cities) return;
+    let grainOwners = {};
     // 1) 城市产粮 + 升级计时
     for (let cid in G.cities) {
         let c = G.cities[cid];
         if (c.grainMax === undefined) continue;
-        // 配置同步：粮食产量/储备向最新配置看齐（只升不降，兼容旧存档）
+        // 配置同步：粮食储备向最新配置看齐（只升不降，兼容旧存档）
         let gcfg = (typeof GRAIN_CITY_CFG !== 'undefined' && GRAIN_CITY_CFG[c.cityType]) ? GRAIN_CITY_CFG[c.cityType] : null;
         if (gcfg) {
-            if (c.grainPerMonth < gcfg.grainPerMonth) c.grainPerMonth = gcfg.grainPerMonth;
             if (c.grainMax < gcfg.grainMax) c.grainMax = gcfg.grainMax;
         }
+        // 铁储量/上限与粮食同构（按城市类型镜像，兼容旧存档补齐）
+        if (c.ironMax === undefined || c.ironMax !== (c.grainMax || 500)) c.ironMax = c.grainMax || 500;
+        if (c.iron === undefined) c.iron = Math.round((c.ironMax || 500) * 0.8);
         if (c.grainUpgradeProgress > 0) {
             c.grainUpgradeProgress = Math.max(0, c.grainUpgradeProgress - days);
             if (c.grainUpgradeProgress <= 0) {
@@ -2108,8 +2281,14 @@ function updateGrain(days) {
                 addGameLog(c.name + " 粮食产量提升完成（月产 " + c.grainPerMonth + "）");
             }
         }
-        let pm = c.grainPerMonth;
-        c.grain = Math.min(c.grainMax || 150, (c.grain || 0) + pm * days / 30);
+        // 产粮走资源系统（T级月产公式），按城市上限封顶
+        let pm = (typeof resGrainMonthly === 'function') ? resGrainMonthly(c) : (c.grainPerMonth || 60);
+        let cap = c.grainMax || 500;
+        let add = pm * days / 30;
+        let room = cap - (c.grain || 0);
+        let inc = Math.min(room, add);
+        c.grain = (c.grain || 0) + inc;
+        if (c.owner) grainOwners[c.owner] = true;
         c.suppliedDivs = 0;
     }
     // 2) 部队补给归属与消耗
@@ -2146,6 +2325,10 @@ function updateGrain(days) {
         if ((d.rations || 0) >= 25) {
             d.strength = Math.min(d.maxStrength || 100, (d.strength || 0) + 3 * days);
         }
+    }
+    // 3) 铁路线粮食再分配：缺口城市（<300）由同线 >300 库存城市逐步补给（不瞬间运输）
+    for (let o in grainOwners) {
+        if (typeof redistributeGrain === 'function') redistributeGrain(o, days);
     }
 }
 
@@ -2732,8 +2915,12 @@ function drawFrontlineOverlay() {
     }
     G.frontlineGroups = G.frontlineGroups.filter(g => activeGroups.has(g.id));
 
-    // 绘制每个前线组
+    // 绘制每个前线组（性能限制：单帧最多渲染 20 根命令线）
+    let MAX_FRONTLINE_LINES = 20;
+    let renderedLines = 0;
     for (let grp of G.frontlineGroups) {
+        if (renderedLines >= MAX_FRONTLINE_LINES) break;
+        renderedLines++;
         let cols = FRONTLINE_COLORS[grp.colorIdx % FRONTLINE_COLORS.length];
         let [sx1, sy1] = worldToScreen(grp.start.x, grp.start.y);
         let [sx2, sy2] = worldToScreen(grp.end.x, grp.end.y);
@@ -3872,6 +4059,32 @@ function handleUIClick(mx,my) {
                     addGameLog(city.name + " 开始升级为大城市 (40天)");
                     return true;
                 }
+                // 粮食/铁矿等级升级（资源系统）
+                if (btn.id === 'res_upgrade_grain' || btn.id === 'res_upgrade_iron') {
+                    let _resType = btn.id === 'res_upgrade_grain' ? 'grain' : 'iron';
+                    // 联机客户端：转发到Host
+                    if (G.multiplayerMode === 'client') {
+                        MP.sendAction({ type: _resType === 'grain' ? 'upgrade_grain' : 'upgrade_iron', province: city.provinceId, cityId: city.id, cityLon: city.lon, cityLat: city.lat, cityName: city.name });
+                        addGameLog("已向Host发送" + (_resType === 'grain' ? '粮食' : '铁矿') + "升级指令");
+                        return true;
+                    }
+                    if (typeof resStartUpgrade === 'function') {
+                        let _r = resStartUpgrade(city, _resType, G.playerCountry);
+                        if (!_r.ok) addGameLog(city.name + " 升级失败：" + _r.reason);
+                    }
+                    return true;
+                }
+                // 修建铁路（进入修路模式，选择目标城市）
+                if (btn.id === 'build_rail') {
+                    if (G.railBuildMode && G.railBuildMode.fromCityId === city.id) {
+                        G.railBuildMode = null;
+                        addGameLog("已退出修建铁路模式");
+                    } else {
+                        G.railBuildMode = { fromCityId: city.id };
+                        addGameLog("修建铁路模式：点击绿色高亮城市选择目标（Esc 取消）");
+                    }
+                    return true;
+                }
                 // 小城市提升粮食产量（100金币 / 30天 / 限1次）
                 if (btn.id === 'upgrade_grain') {
                     let c2 = G.cities[city.id];
@@ -4142,6 +4355,9 @@ canvas.addEventListener("wheel",(e)=>{
     let r=canvas.getBoundingClientRect();
     let sx=e.clientX-r.left,sy=e.clientY-r.top;
 
+    // 城市管理面板：列表滚动
+    if (typeof cityMgrWheel === 'function' && cityMgrWheel(e.deltaY, sx, sy)) return;
+
     // 铁路运兵弹窗：滚轮滚动城市列表
     if (G._railModal && window._railModalRect) {
         let mr = window._railModalRect;
@@ -4187,7 +4403,7 @@ canvas.addEventListener("wheel",(e)=>{
         }
     }
 
-    // 左侧面板（经济/海军）滚轮支持
+    // 左侧面板（经济/海军/城市）滚轮支持
     if (G.leftPanel && G._leftPanelRect) {
         let r = G._leftPanelRect;
         if (sx > r.x && sx < r.x + r.w && sy > r.y && sy < r.y + r.h) {
@@ -4197,6 +4413,8 @@ canvas.addEventListener("wheel",(e)=>{
                 } else {
                     _navyPanelScroll = Math.max(0, Math.min(_navyMaxScroll || 0, _navyPanelScroll + e.deltaY));
                 }
+            } else if (G.leftPanel === 'cities') {
+                if (typeof cityMgrWheel === 'function') cityMgrWheel(e.deltaY, sx, sy);
             }
             return;
         }
@@ -4233,6 +4451,7 @@ canvas.addEventListener("wheel",(e)=>{
     nz=Math.min(MAX_ZOOM,Math.max(MIN_ZOOM,nz));
     if (nz===zoom) return;
     zoom=nz;
+    window._lastWheelTime = performance.now(); // 标记缩放活跃状态，用于跳过离屏缓存重建
     let s=zoom*PIXELS_PER_DEGREE;
     camX=wb[0]-(sx-canvas.width/2)/s;
     camY=wb[1]+(sy-canvas.height/2)/s;
@@ -4400,6 +4619,14 @@ canvas.addEventListener("pointerup",(e)=>{
             return;
         }
 
+        // 资源视图切换按钮（右下角）
+        if (window._resBtnRect && sx > window._resBtnRect.x && sx < window._resBtnRect.x + window._resBtnRect.w && sy > window._resBtnRect.y && sy < window._resBtnRect.y + window._resBtnRect.h) {
+            G.resourceView = !G.resourceView;
+            addGameLog("资源视图: " + (G.resourceView ? "开启" : "关闭"));
+            isDragging = false;
+            return;
+        }
+
         // 点击左上角国旗 → 打开本国交互页面
         if (G.playerCountry && sy < TOP_BAR_HEIGHT && sx < 120) {
             G.diplomacyFocus = G.playerCountry;
@@ -4419,6 +4646,51 @@ canvas.addEventListener("pointerup",(e)=>{
                 let oy=by+bh-65+i*30;
                 if (sx>bx+20&&sx<bx+bw-20&&sy>oy&&sy<oy+26) { resolveEvent(i);isDragging=false;return; }
             }
+        }
+
+        if (G.railBuildConfirm) {
+            // 修建确认框按钮
+            if (window._railBuildBtns) {
+                for (let b of window._railBuildBtns) {
+                    if (sx > b.x && sx < b.x + b.w && sy > b.y && sy < b.y + b.h) {
+                        let c = G.railBuildConfirm;
+                        G.railBuildConfirm = null;
+                        if (b.id === 'yes') {
+                            if (G.multiplayerMode === 'client') {
+                                MP.sendAction({ type: 'build_rail', fromCityId: c.fromId, toCityId: c.toId, days: c.days });
+                                addGameLog("已向Host发送铁路修建指令");
+                            } else {
+                                let res = startRailBuild(c.fromId, c.toId);
+                                if (!res.ok) addGameLog("修建失败：" + res.reason);
+                            }
+                            G.railBuildMode = null;
+                        }
+                        isDragging = false;
+                        return;
+                    }
+                }
+            }
+            G.railBuildConfirm = null;
+            isDragging = false;
+            return;
+        }
+        if (G.railBuildMode && G.railBuildMode.fromCityId) {
+            // 修路模式：点击高亮城市（最近3个）→ 确认框；点击空白/不可建 → 退出
+            let hitTarget = null;
+            for (let cid of railNearestCandidates(G.railBuildMode.fromCityId, 3)) {
+                let c = G.cities[cid];
+                let [cx, cy] = worldToScreen(c.lon, c.lat);
+                if (Math.hypot(sx - cx, sy - cy) < 20) { hitTarget = cid; break; }
+            }
+            if (hitTarget) {
+                let info = railBuildCost(G.railBuildMode.fromCityId, hitTarget);
+                G.railBuildConfirm = { fromId: G.railBuildMode.fromCityId, toId: hitTarget, cost: info.cost, days: info.days };
+            } else {
+                G.railBuildMode = null;
+                addGameLog("已退出修建铁路模式");
+            }
+            isDragging = false;
+            return;
         }
 
         if (handleLeftPanelClick(sx, sy)) { isDragging=false; return; }
@@ -4958,8 +5230,10 @@ document.addEventListener("keydown",(e)=>{
     // 跳过输入框/下拉框/文本域，避免干扰联机面板输入
     const tag = e.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    // 城市管理面板：搜索框输入 / Escape 关闭
+    if (typeof cityMgrKeydown === 'function' && cityMgrKeydown(e)) return;
     if ((e.key==="r"||e.key==="R") && !G.gameOver) { location.reload(); }
-    if (e.key==="Escape") { G.selectedDivisions=[]; selectedProvince=null; G.selectedProvince=null; G.selectedCity=null; G.selectedCities=[]; G.selectedNavyNodeOnMap=false; G.navyProductionMode=false; G.selectedNavyNode=null; G.activeTab=null; _showNavyGuide=false; _navyGuideScroll=0; G.garrisonMode=false; G.garrisonUnitIds=[]; G.selectedArmyGroupId=null; G._cmdModal=null; G._cmdModalScroll=0; }
+    if (e.key==="Escape") { G.selectedDivisions=[]; selectedProvince=null; G.selectedProvince=null; G.selectedCity=null; G.selectedCities=[]; G.selectedNavyNodeOnMap=false; G.navyProductionMode=false; G.selectedNavyNode=null; G.activeTab=null; _showNavyGuide=false; _navyGuideScroll=0; G.garrisonMode=false; G.garrisonUnitIds=[]; G.selectedArmyGroupId=null; G._cmdModal=null; G._cmdModalScroll=0; G.railBuildMode=null; G.railBuildConfirm=null; }
     if ((e.key==="r"||e.key==="R") && G.gameOver) { resetGame(); }
 
     // 联机模式下速度调整（循环切换离散倍速）

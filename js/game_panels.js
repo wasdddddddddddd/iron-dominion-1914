@@ -441,9 +441,9 @@ function unitSprite(div, imgSize, flip) {
         cc.drawImage(img, W / 2 - s / 2, imgY - s / 2, s, s);
     }
     UNIT_SPRITE_CACHE[key] = c;
-    // 容量上限：超过 400 张时整体清空（拖拽缩放时 imgSize 档位变化会积累缓存）
+    // 容量上限：超过 1000 张时整体清空（拖拽缩放时 imgSize 档位变化会积累缓存）
     if (UNIT_SPRITE_CACHE.__n === undefined) UNIT_SPRITE_CACHE.__n = 0;
-    if (++UNIT_SPRITE_CACHE.__n > 400) {
+    if (++UNIT_SPRITE_CACHE.__n > 1000) {
         UNIT_SPRITE_CACHE.__n = 0;
         for (let k in UNIT_SPRITE_CACHE) if (k !== '__n') delete UNIT_SPRITE_CACHE[k];
     }
@@ -548,6 +548,8 @@ function drawDivisions() {
     if (zoom > 0.35) {
     let _selSet = new Set(G.selectedDivisions || []);
     let _nowMs = performance.now();
+    const _cw = canvas.width, _ch = canvas.height;
+    ctx.save(); // 外移：一次性保存，避免每单位save/restore
     for (let div of G.divisions) {        let rx = (div.rx!==undefined) ? div.rx : null;
         let ry = (div.ry!==undefined) ? div.ry : null;
         if (rx===null) {
@@ -556,7 +558,7 @@ function drawDivisions() {
             rx = pd.center[0]; ry = pd.center[1];
         }
         let [sx, sy] = worldToScreen(rx, ry);
-        if (sx < -100 || sx > canvas.width + 100 || sy < -100 || sy > canvas.height + 100) continue;
+        if (sx < -100 || sx > _cw + 100 || sy < -100 || sy > _ch + 100) continue;
         let isPlayer = div.country === G.playerCountry;
         let isSel = _selSet.has(div.id);
         let BASE = 7;
@@ -568,7 +570,7 @@ function drawDivisions() {
         if (zoom < STRATEGIC_ZOOM && div.type !== 'navy' && div.type !== 'submarine') {
             pulse = 1 + 0.5 * DUST_SIN_T[(_nowMs / 300) & 1023];
         }
-        let imgSize = (div.type === 'navy' ? BASE * 5 : BASE * 0.875 / 3) * effZoom * pulse; // 海军不变，陆军缩小为1/3
+        let imgSize = (div.type === 'navy' ? BASE * 2.5 : BASE * 0.875 / 3) * effZoom * pulse; // 海军缩小为1/2
         let r = 6; // 基础指示器半径（扬尘、集火等）
         let selR = isSel ? (div.type === 'navy' ? imgSize * 0.55 : imgSize * 0.50) : 0; // 选中圈随单位等比缩放
 
@@ -603,7 +605,6 @@ function drawDivisions() {
         // === Draw pixel art unit image（贴图+阴影合一 sprite 缓存，替代每帧大图缩放+ellipse） ===
         let countryImg = UNIT_IMAGES[div.country + '_' + div.type];
         let img = countryImg || UNIT_IMAGES[div.type];
-        ctx.save();
         let usingSprite = false;
         let glDrawn = false;
         if (div.type !== 'submarine') {
@@ -656,40 +657,9 @@ function drawDivisions() {
             ctx.fillStyle = "rgba(60,200,255,0.7)";
             ctx.fillText("🌊", sx, sy - r - 6);
         }
-        ctx.restore();
-
-        // === 陆军移动扬尘效果（4 粒 fillRect + 查找表，保证可见且低开销） ===
-        let isMoving = div.state === 'moving' || div.moving || (div.targetX !== null && div.targetX !== undefined);
-        if (isMoving && div.type !== 'navy' && div.type !== 'submarine') {
-            let dustBaseY = sy + imgSize * 0.45;
-            let ph = (_nowMs / 500) & 1023;
-            let ph2 = (_nowMs / 280) & 1023;
-            let st = DUST_SIN_T;
-            let seedBase = (div.id * 97) & 1023;
-            let glDust = typeof GLU !== 'undefined' && GLU.isEnabled();
-            if (glDust) {
-                for (let i = 0; i < 4; i++) {
-                    let seed = (seedBase + i * 257) & 1023;
-                    let angIdx = (ph + seed) & 1023;
-                    let dist = r * 0.6 + st[(ph2 / 2 + seed * 3) & 1023] * r * 0.55;
-                    let size = 2.2 + st[(ph2 + seed * 5) & 1023] * 1.2;
-                    let dx = st[(angIdx + 256) & 1023] * dist;
-                    let dy = st[angIdx] * dist * 0.35;
-                    GLU.pushDust(sx + dx, dustBaseY + dy, size * 1.6, 0.45, 205 / 255, 190 / 255, 160 / 255);
-                }
-            } else {
-                ctx.fillStyle = 'rgba(205,190,160,0.45)';
-                for (let i = 0; i < 4; i++) {
-                    let seed = (seedBase + i * 257) & 1023;
-                    let angIdx = (ph + seed) & 1023;
-                    let dist = r * 0.6 + st[(ph2 / 2 + seed * 3) & 1023] * r * 0.55;
-                    let size = 2.2 + st[(ph2 + seed * 5) & 1023] * 1.2;
-                    let dx = st[(angIdx + 256) & 1023] * dist;
-                    let dy = st[angIdx] * dist * 0.35;
-                    ctx.fillRect(sx + dx - size / 2, dustBaseY + dy - size / 2, size, size);
-                }
-            }
-        }
+        // 重置状态，避免影响下一个单位
+        ctx.globalAlpha = 1.0;
+        ctx.imageSmoothingEnabled = true;
 
         // === 铁路运兵乘车中：蒸汽烟迹 + 🚂 标记 + 当前轨道段高亮 ===
         if (div.railTrip && div.railTrip.stage === 'on_train' && div.railTrip.path) {
@@ -811,6 +781,7 @@ function drawDivisions() {
         ctx.setLineDash([]);
         ctx.lineWidth = 1;
     }
+    ctx.restore(); // 匹配循环前的 save
     } // end zoom check for unit drawing
 
     // ===== 集团军边框：同色圆环；选中集团军时脉冲高亮 =====
@@ -986,8 +957,8 @@ function drawDivisions() {
     if (G.moveLines) {
         let now = Date.now();
         G.moveLines = G.moveLines.filter(line => (now - line.startTime) <= 3000); // fade out after 3s
-        // 同时最多渲染 50 条移动绿线（只画最新 50 条，多了不渲染）
-        let vis = G.moveLines.length > 50 ? G.moveLines.slice(-50) : G.moveLines;
+        // 同时最多渲染 20 条移动绿线（只画最新 20 条，多了不渲染）
+        let vis = G.moveLines.length > 20 ? G.moveLines.slice(-20) : G.moveLines;
         for (let line of vis) {
             let elapsed = now - line.startTime;
             let [sx, sy] = worldToScreen(line.fromX, line.fromY);
@@ -1069,11 +1040,14 @@ function drawGameTopBar() {
         CT.drawSeparator(ctx, lx, cy, 16);
         lx += 8;
 
+        // 🌾 粮食 / 🏭 铁矿 国家总量
+        if (typeof resDrawTopBar === 'function') lx = resDrawTopBar(lx, cy) || lx;
+
         // 💰 国库
         ctx.fillStyle = ge.treasury >= 0 ? CT.textH : CT.danger;
         ctx.font = "11px Georgia,serif";
-        ctx.fillText("💰" + Math.floor(ge.treasury), lx, cy);
-        lx += ctx.measureText("💰" + Math.floor(ge.treasury)).width + 8;
+        ctx.fillText("💰 金币:" + Math.floor(ge.treasury), lx, cy);
+        lx += ctx.measureText("💰 金币:" + Math.floor(ge.treasury)).width + 8;
 
         // 📈 收入/支出
         ctx.fillStyle = ge.income >= ge.expenses ? "rgba(120,180,120,0.7)" : "rgba(200,120,120,0.7)";
@@ -1245,6 +1219,8 @@ function drawActionBar() {
     if (G.selectedNavyNodeOnMap && G.selectedNavyNode) {
         drawNavyNodePanel();
     }
+    // 修建铁路模式（范围圈/候选高亮/确认框，绘制在最上层）
+    if (G.railBuildMode || G.railBuildConfirm) drawRailBuildOverlay();
 }
 
 // ===== 城市详情面板（右侧） =====
@@ -1280,13 +1256,10 @@ function drawCityPanel() {
         let upgrading = G.buildQueue && G.buildQueue.some(bq => bq.type === 'upgrade_city' && bq.cityId === city.id);
         upgradeH = upgrading ? 54 : 40;
     }
-    // 粮食区块高度
-    let grainH = 0;
-    if (isOwn) {
-        grainH = 80;
-        if (!isMajorCity(city.id) && cityData && cityData.cityType === 'small' && !cityData.grainUpgraded) grainH += 38;
-    }
-    let baseH = isOwn ? 180 + typeCount * 34 + queueH + upgradeH + grainH : 170;
+    // 资源区块高度（粮食/铁矿等级 + 升级按钮）
+    let resH = 0;
+    if (isOwn && typeof resPanelH === 'function') resH = resPanelH(city);
+    let baseH = isOwn ? 180 + typeCount * 34 + queueH + upgradeH + resH : 170;
     let h = baseH;
 
     ctx.save();
@@ -1442,53 +1415,40 @@ function drawCityPanel() {
         }
     }
 
-    // ===== 粮食区块（己方城市：库存/月产/补给覆盖 + 小城市升级） =====
-    if (isOwn) {
-        CT.drawSeparator(ctx, x + 10, ly, w - 20);
-        ly += 8;
-        ctx.fillStyle = "#c8a840";
-        ctx.font = "bold 13px Georgia,serif";
-        ctx.textAlign = "center";
-        ctx.fillText("— 粮食 —", x + w / 2, ly);
-        ly += 18;
-        ctx.textAlign = "left";
-        ctx.font = "12px Georgia,serif";
-        let gpm = cityData.grainPerMonth !== undefined ? cityData.grainPerMonth : 60;
-        let gmax = cityData.grainMax !== undefined ? cityData.grainMax : 500;
-        let upgTxt = cityData.grainUpgraded ? " ✅" : (cityData.grainUpgradeProgress > 0 ? " → 120（升级中）" : "");
-        ctx.fillStyle = "#d4b860";
-        ctx.fillText("🌾 粮食: " + Math.floor(cityData.grain || 0) + " / " + gmax, x + 12, ly);
-        ctx.fillStyle = "#a8d868";
-        ctx.fillText("月产: " + gpm + upgTxt, x + 12, ly + 18);
-        ctx.fillStyle = "rgba(200,180,150,0.7)";
-        ctx.fillText("补给覆盖: " + (cityData.suppliedDivs || 0) + " 个师", x + 12, ly + 36);
-        ly += 48;
+    // ===== 资源区块（粮食/铁矿等级、月产、库存、连接状态 + 升级按钮） =====
+    if (isOwn && typeof resDrawCityPanel === 'function') {
+        ly = resDrawCityPanel(x, w, ly, city) || ly;
+    }
 
-        // 小城市粮食升级（限1次：未升级→按钮 / 升级中→进度 / 已升级→文字）
-        if (!isMajorCity(city.id) && !city.isCapital && cityData.cityType === 'small') {
-            if (cityData.grainUpgraded) {
-                ctx.fillStyle = "#a8d868";
-                ctx.fillText("已升级 ✅（月产 120）", x + 12, ly);
-                ly += 20;
-            } else if (cityData.grainUpgradeProgress > 0) {
-                let remain = Math.ceil(cityData.grainUpgradeProgress);
-                let pct = 1 - cityData.grainUpgradeProgress / ((typeof GRAIN_UPGRADE_DAYS !== 'undefined') ? GRAIN_UPGRADE_DAYS : 30);
-                CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, "提升粮食产量（升级中 " + remain + " 天）", { style: "default", font: "12px Georgia,serif" });
-                CT.drawProgressBar(ctx, x + 14, ly + 20, w - 36, 4, pct, CT.warning);
-                ly += 30;
-            } else {
-                let canUpg = treasury >= ((typeof GRAIN_UPGRADE_COST !== 'undefined') ? GRAIN_UPGRADE_COST : 100);
-                let hovered = mouseY !== undefined && mouseY > ly && mouseY < ly + 26 && mouseX > x + 8 && mouseX < x + w - 8;
-                CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, "提升粮食产量 ($" + ((typeof GRAIN_UPGRADE_COST !== 'undefined') ? GRAIN_UPGRADE_COST : 100) + " · " + ((typeof GRAIN_UPGRADE_DAYS !== 'undefined') ? GRAIN_UPGRADE_DAYS : 30) + "天)", {
-                    hovered: hovered && canUpg,
-                    style: canUpg ? "highlight" : "default",
-                    font: "12px Georgia,serif"
-                });
-                window._cityBtns.push({ id: 'upgrade_grain', x: x + 8, y: ly, w: w - 16, h: 26, enabled: canUpg });
-                ly += 30;
-            }
-            CT.drawSeparator(ctx, x + 10, ly, w - 20);
-            ly += 8;
+    // ===== 修建铁路 =====
+    CT.drawSeparator(ctx, x + 10, ly, w - 20);
+    ly += 8;
+    let railModeActive = !!(G.railBuildMode && G.railBuildMode.fromCityId === city.id);
+    let railBtnTxt = railModeActive ? "🚂 修建铁路（点击绿色高亮城市 · Esc 退出）" : "🚂 修建铁路（连接附近本国城市）";
+    let hoveredRail = mouseY !== undefined && mouseY > ly && mouseY < ly + 26 && mouseX > x + 8 && mouseX < x + w - 8;
+    CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 26, railBtnTxt, {
+        hovered: hoveredRail,
+        style: railModeActive ? "highlight" : "default",
+        font: "12px Georgia,serif"
+    });
+    window._cityBtns.push({ id: 'build_rail', x: x + 8, y: ly, w: w - 16, h: 26, enabled: true });
+    ly += 30;
+
+    // 修建中的铁路：显示进度条（按 from/to 匹配，而非队列 cityId）
+    if (isOwn && G.buildQueue) {
+        let railQ = G.buildQueue.filter(bq => bq.type === 'build_rail' && (bq.fromCityId === city.id || bq.toCityId === city.id));
+        for (let rq of railQ) {
+            let total = rq.totalDays || 1;
+            let progress = Math.max(0, 1 - rq.days / total);
+            let other = G.cities[rq.fromCityId === city.id ? rq.toCityId : rq.fromCityId];
+            let otherName = other ? other.name : "?";
+            CT.drawRoundedBtn(ctx, x + 8, ly, w - 16, 30, "", { style: "default", radius: 2 });
+            ctx.fillStyle = "#c8a830";
+            ctx.font = "12px Georgia,serif";
+            ctx.textAlign = "left"; ctx.textBaseline = "middle";
+            ctx.fillText("🚧 铁路修建 → " + otherName + " " + Math.floor(progress * 100) + "%（" + Math.ceil(rq.days) + "天）", x + 14, ly + 10);
+            CT.drawProgressBar(ctx, x + 14, ly + 20, w - 36, 4, progress, CT.warning);
+            ly += 34;
         }
     }
 
@@ -1580,6 +1540,113 @@ function drawCityPanel() {
         }
     }
 
+    ctx.restore();
+}
+
+// ===== 修建铁路模式：范围圈 + 候选城市高亮 + 起点-鼠标预览线 + 确认框 =====
+function drawRailBuildOverlay() {
+    if (G.railBuildConfirm) {
+        let c = G.railBuildConfirm;
+        let cA = G.cities[c.fromId], cB = G.cities[c.toId];
+        if (!cA || !cB) { G.railBuildConfirm = null; return; }
+        let treasury = G.countries && G.countries[G.playerCountry] ? G.countries[G.playerCountry].treasury : 0;
+        let dw = 320, dh = 150;
+        let dx = (canvas.width - dw) / 2, dy = canvas.height / 2 - dh / 2 - 40;
+        ctx.save();
+        ctx.fillStyle = 'rgba(18,14,10,0.98)';
+        ctx.fillRect(dx, dy, dw, dh);
+        ctx.strokeStyle = '#c8a830';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(dx + 0.5, dy + 0.5, dw - 1, dh - 1);
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.font = 'bold 15px Georgia,serif';
+        ctx.fillStyle = '#e8d080';
+        ctx.fillText('🚂 修建铁路', dx + dw / 2, dy + 22);
+        ctx.font = '13px Georgia,serif';
+        ctx.fillStyle = '#d4c0a0';
+        ctx.fillText(cA.name + ' → ' + cB.name, dx + dw / 2, dy + 50);
+        ctx.fillText('花费：$' + c.cost + '  耗时：' + c.days + ' 天', dx + dw / 2, dy + 72);
+        ctx.font = '12px Georgia,serif';
+        ctx.fillStyle = 'rgba(212,192,160,0.8)';
+        ctx.fillText('当前金币：' + Math.floor(treasury), dx + dw / 2, dy + 92);
+        let by = dy + dh - 40;
+        let bw = (dw - 48) / 2;
+        window._railBuildBtns = [];
+        ctx.font = '12px Georgia,serif';
+        ctx.fillStyle = 'rgba(255,215,0,0.15)';
+        ctx.fillRect(dx + 16, by, bw, 28);
+        ctx.strokeStyle = 'rgba(255,215,0,0.5)';
+        ctx.strokeRect(dx + 16.5, by + 0.5, bw - 1, 27);
+        ctx.fillStyle = '#ffd700';
+        ctx.fillText('确认修建', dx + 16 + bw / 2, by + 14);
+        window._railBuildBtns.push({ id: 'yes', x: dx + 16, y: by, w: bw, h: 28 });
+        ctx.fillStyle = 'rgba(255,255,255,0.06)';
+        ctx.fillRect(dx + 16 + bw + 16, by, bw, 28);
+        ctx.strokeStyle = 'rgba(120,120,130,0.5)';
+        ctx.strokeRect(dx + 16 + bw + 16.5, by + 0.5, bw - 1, 27);
+        ctx.fillStyle = '#c8b8a0';
+        ctx.fillText('取消', dx + 16 + bw + 16 + bw / 2, by + 14);
+        window._railBuildBtns.push({ id: 'no', x: dx + 16 + bw + 16, y: by, w: bw, h: 28 });
+        ctx.restore();
+        return;
+    }
+    if (!G.railBuildMode || !G.railBuildMode.fromCityId) return;
+    let from = G.cities[G.railBuildMode.fromCityId];
+    if (!from) return;
+    ctx.save();
+    // 范围圈
+    let [fcx, fcy] = worldToScreen(from.lon, from.lat);
+    let rad = typeof RAIL_BUILD_RADIUS !== 'undefined' ? RAIL_BUILD_RADIUS : 4.0;
+    let [rpx, rpy] = worldToScreen(from.lon + rad, from.lat);
+    let radPx = Math.abs(rpx - fcx);
+    ctx.beginPath(); ctx.arc(fcx, fcy, radPx, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(120,200,120,0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(120,200,120,0.05)';
+    ctx.fill();
+    // 半径内最近的可修建目标（高亮最近 3 个）
+    let cands = typeof railNearestCandidates === 'function' ? railNearestCandidates(G.railBuildMode.fromCityId, 3) : [];
+    for (let cid of cands) {
+        let c = G.cities[cid];
+        let [cx2, cy2] = worldToScreen(c.lon, c.lat);
+        ctx.beginPath(); ctx.arc(cx2, cy2, 16, 0, Math.PI * 2);
+        ctx.strokeStyle = 'rgba(120,220,140,0.9)';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(120,220,140,0.18)';
+        ctx.fill();
+        // 起点 → 目标 虚线预览
+        ctx.strokeStyle = 'rgba(120,220,140,0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(fcx, fcy);
+        ctx.lineTo(cx2, cy2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    // 起点 → 鼠标预览线
+    if (mouseX !== undefined && mouseY !== undefined) {
+        let ok = null;
+        for (let cid of cands) {
+            let c = G.cities[cid];
+            let [cx2, cy2] = worldToScreen(c.lon, c.lat);
+            if (Math.hypot(mouseX - cx2, mouseY - cy2) < 20) { ok = c; break; }
+        }
+        ctx.strokeStyle = ok ? 'rgba(120,220,140,0.8)' : 'rgba(255,120,90,0.4)';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath(); ctx.moveTo(fcx, fcy); ctx.lineTo(mouseX, mouseY); ctx.stroke();
+        ctx.setLineDash([]);
+    }
+    // 提示
+    ctx.font = 'bold 13px Georgia,serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = 'rgba(180,240,180,0.95)';
+    ctx.fillText('选择绿色高亮城市作为铁路目标（Esc 取消）', canvas.width / 2, canvas.height - BOTTOM_BAR_HEIGHT - 12);
     ctx.restore();
 }
 
@@ -3803,7 +3870,7 @@ function drawLeftSidebar() {
     let tabStartY = TOP_BAR_HEIGHT + 4;
     let availableH = canvas.height - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT - 8;
     let tabGap = 6;
-    let totalTabH = LEFT_TAB_H * 2 + tabGap;
+    let totalTabH = LEFT_TAB_H * 3 + tabGap * 2;
     let tabY = tabStartY + (availableH - totalTabH) / 2;
 
     ctx.save();
@@ -3812,9 +3879,6 @@ function drawLeftSidebar() {
     // 标签背景底条
     ctx.fillStyle = "rgba(18,12,6,0.75)";
     ctx.fillRect(0, TOP_BAR_HEIGHT, LEFT_TAB_W, canvas.height - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT);
-
-    // 顶部装饰线
-    CT.drawOrnamentLine(ctx, LEFT_TAB_W, TOP_BAR_HEIGHT, canvas.height - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT);
 
     // 经济标签
     let econActive = G.leftPanel === 'economy';
@@ -3826,6 +3890,12 @@ function drawLeftSidebar() {
     let navyActive = G.leftPanel === 'navy';
     drawLeftTab(tabX, tabY, LEFT_TAB_W, LEFT_TAB_H, "🚢", "海军", navyActive);
     G._leftSidebarTabs.push({ x: tabX, y: tabY, w: LEFT_TAB_W, h: LEFT_TAB_H, panel: 'navy' });
+    tabY += LEFT_TAB_H + tabGap;
+
+    // 城市标签
+    let cityActive = G.leftPanel === 'cities';
+    drawLeftTab(tabX, tabY, LEFT_TAB_W, LEFT_TAB_H, "🏙", "城市", cityActive);
+    G._leftSidebarTabs.push({ x: tabX, y: tabY, w: LEFT_TAB_W, h: LEFT_TAB_H, panel: 'cities' });
 
     ctx.restore();
 
@@ -3889,6 +3959,8 @@ function drawLeftPanelContent() {
         drawLeftEconomyPanel(px + 10, py + 5, pw - 20, ph - 10);
     } else if (G.leftPanel === 'navy') {
         drawLeftNavyPanel2(px + 8, py + 5, pw - 16, ph - 10);
+    } else if (G.leftPanel === 'cities') {
+        // 城市管理面板自绘全权覆盖（由 drawCityManager 在渲染末尾绘制）
     }
     ctx.restore();
 }
@@ -3900,9 +3972,29 @@ function handleLeftPanelClick(mx, my) {
             if (mx > btn.x && mx < btn.x + btn.w && my > btn.y && my < btn.y + btn.h) {
                 G.leftPanel = (G.leftPanel === btn.panel) ? null : btn.panel;
                 G.activeTab = null;
+                // 打开左侧面板时关闭地图上已打开的面板（面板互斥）
+                if (G.leftPanel) {
+                    G.selectedCity = null;
+                    G.selectedCities = [];
+                    G.selectedNavyNode = null;
+                    G.selectedNavyNodeOnMap = false;
+                    G.selectedProvince = null;
+                    selectedProvince = null;
+                    G.diplomacyFocus = null;
+                    G.selectedArmyGroupId = null;
+                    G.selectedFactories = [];
+                    G.navyGraveInfo = null;
+                    G._cmdModal = null;
+                }
                 // 切换面板时重置滚动位置
                 if (G.leftPanel === 'navy') _navyPanelScroll = 0;
                 if (G.leftPanel === 'economy') _econScroll = 0;
+                if (G.leftPanel === 'cities' && G.cityMgrState) {
+                    G.cityMgrState.scroll = 0;
+                    G.cityMgrState.confirm = null;
+                    G.cityMgrState.dropdown = null;
+                    G.cityMgrState.searchFocus = false;
+                }
                 return true;
             }
         }
@@ -3914,6 +4006,10 @@ function handleLeftPanelClick(mx, my) {
             G.leftPanel = null;
             return true;
         }
+    }
+    // 城市管理面板按钮
+    if (G.leftPanel === 'cities') {
+        if (typeof cityMgrClick === 'function' && cityMgrClick(mx, my)) return true;
     }
     // 海军面板按钮
     if (G.leftPanel === 'navy' && G._leftPanelRect) {

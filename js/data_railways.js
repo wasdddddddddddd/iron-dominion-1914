@@ -24,6 +24,9 @@ const PRESET_RAILWAYS = [
     ['koblenz', 'mainz'],
     ['mainz', 'frankfurt'],
     ['cologne', 'frankfurt'],
+    // 鲁尔工业带：杜伊斯堡-埃森-多特蒙德（科隆不直连杜伊斯堡，可由玩家修建）
+    ['duisburg', 'essen'],
+    ['essen', 'dortmund'],
     ['leipzig', 'nuremberg'],
     ['nuremberg', 'munich'],
     ['frankfurt', 'nuremberg'],
@@ -92,6 +95,9 @@ const PRESET_RAILWAYS = [
     ['rome', 'naples'],
     ['turin', 'genoa'],
     ['venice', 'trieste'],
+    // 西西里/墨西拿海峡：仅这三城互连
+    ['catania', 'messina'],
+    ['messina', 'reggio'],
     // ===== 西班牙 / 葡萄牙 =====
     ['madrid', 'zaragoza'],
     ['zaragoza', 'barcelona'],
@@ -168,7 +174,8 @@ const PRESET_RAILWAYS = [
     ['belgrade', 'nis'],
     ['belgrade', 'budapest'],
     ['nis', 'thessaloniki'],
-    ['thessaloniki', 'athens'],
+    ['athens', 'larissa'],
+    ['larissa', 'thessaloniki'],
     ['sofia', 'nis'],
     ['sofia', 'plovdiv'],
     ['plovdiv', 'varna'],

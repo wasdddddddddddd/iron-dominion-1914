@@ -4,3 +4,14 @@ node_modules/
 lark_auth_qrcode.png
 lark_qrcode.png
 exportImage.tiff
+
+# Unity
+[Uu]nity/
+[Uu]nityProject/
+[Bb]uild/
+[Bb]uilds/
+Library/
+Temp/
+*.csproj
+*.sln
+*.userprefs

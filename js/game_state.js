@@ -26,6 +26,7 @@ let G = {
     militaryAccess: {},
     railways: {},
     railwaysView: true,
+    resourceView: false,
     events: [],
     activeEvent: null,
     buildQueue: [],
@@ -444,6 +445,9 @@ function initCities() {
             grainUpgraded: false,
             grainUpgradeProgress: 0,
             suppliedDivs: 0,
+            // 铁矿储量（与粮食同构：上限镜像城市类型）
+            ironMax: gCfg.grainMax,
+            iron: Math.round(gCfg.grainMax * 0.8),
         };
     }
     // 预计算省份→城市映射，避免每帧 O(provinces*cities) 扫描

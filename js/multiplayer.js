@@ -639,6 +639,13 @@ window.MP = (function() {
                 commanderPool: G.commanderState.commanderPool ? { ...G.commanderState.commanderPool } : {},
                 chiefPool: G.commanderState.chiefPool ? { ...G.commanderState.chiefPool } : {},
             } : null,
+            // 玩家修建的铁路段（客户端本地初始化不包含，必须随全量同步）
+            railways: G.railways ? { ...G.railways } : {},
+            // 建造队列（铁路修建/升级进度，客户端需据此渲染读条与完成铁路）
+            buildQueue: (G.buildQueue || []).map(b => ({
+                type: b.type, cityId: b.cityId, days: b.days, totalDays: b.totalDays,
+                country: b.country, fromCityId: b.fromCityId, toCityId: b.toCityId,
+            })),
         };
 
         // 师团
@@ -664,6 +671,14 @@ window.MP = (function() {
                 occupierFlag: c.occupierFlag || null,
                 originalOwner: c.originalOwner || null,
                 originalMaxHp: c.originalMaxHp || null,
+                // 资源字段（粮食/铁矿库存与上限，客户端只渲染不模拟，需全量同步）
+                cityType: c.cityType || null,
+                isCapital: c.isCapital || false,
+                grain: c.grain, grainMax: c.grainMax, grainPerMonth: c.grainPerMonth,
+                grainUpgraded: c.grainUpgraded || false,
+                grainUpgradeProgress: c.grainUpgradeProgress || 0,
+                suppliedDivs: c.suppliedDivs || 0,
+                iron: c.iron, ironMax: c.ironMax,
             };
         }
 
@@ -828,6 +843,13 @@ window.MP = (function() {
             G.commanderState.commanderPool = { ...(state.commanderState.commanderPool || {}) };
             G.commanderState.chiefPool = { ...(state.commanderState.chiefPool || {}) };
         }
+
+        // 玩家修建的铁路 + 建造队列（客户端不跑模拟，必须用 Host 数据渲染与运兵）
+        if (state.railways) G.railways = state.railways;
+        if (state.buildQueue) G.buildQueue = state.buildQueue;
+        if (typeof invalidateRailCaches === 'function') invalidateRailCaches();
+        if (typeof invalidateRailMtnCache === 'function') invalidateRailMtnCache();
+        if (typeof cityMgrInvalidateCache === 'function') cityMgrInvalidateCache();
     }
 
     function applyDelta(delta) {
@@ -927,6 +949,13 @@ window.MP = (function() {
                 break;
             case 'upgrade_city':
                 handleRemoteCityUpgrade(country, action);
+                break;
+            case 'build_rail':
+                handleRemoteRailBuild(country, action);
+                break;
+            case 'upgrade_grain':
+            case 'upgrade_iron':
+                handleRemoteResourceUpgrade(country, action);
                 break;
             case 'alliance':
                 if (typeof formAlliance === 'function') formAlliance(country, action.target);
@@ -1090,6 +1119,30 @@ window.MP = (function() {
             cityLat: action.cityLat,
             cityName: action.cityName,
         });
+    }
+
+    function handleRemoteRailBuild(country, action) {
+        // 校验：两端均为该国城市（防止越权修路）
+        let cA = G.cities && G.cities[action.fromCityId];
+        let cB = G.cities && G.cities[action.toCityId];
+        if (!cA || !cB || cA.owner !== country || cB.owner !== country) return;
+        if (typeof startRailBuild === 'function') {
+            let saved = G.playerCountry;
+            G.playerCountry = country; // startRailBuild 按 playerCountry 判定归属/扣款
+            let r = startRailBuild(action.fromCityId, action.toCityId);
+            G.playerCountry = saved;
+            if (!r.ok) addGameLog(cA.name + " 修建铁路失败：" + r.reason);
+        }
+    }
+
+    function handleRemoteResourceUpgrade(country, action) {
+        let city = G.cities && G.cities[action.cityId];
+        if (!city || city.owner !== country) return;
+        let res = action.type === 'upgrade_grain' ? 'grain' : 'iron';
+        if (typeof resStartUpgrade === 'function') {
+            let r = resStartUpgrade(city, res, country);
+            if (!r.ok) addGameLog(city.name + " 升级失败：" + r.reason);
+        }
     }
 
     function handleRemoteGarrisonRemove(country, action) {
