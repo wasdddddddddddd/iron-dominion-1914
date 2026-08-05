@@ -860,6 +860,8 @@ function updateGame(dtMs) {
     if (days<0.001) days=0.001;
     G.tick++;
     G.date.setTime(G.date.getTime()+days*86400000);
+    // 国际市场：每日价格刷新 + 月度统计滚动
+    if (typeof marketTick === 'function') marketTick(days);
     // 经济/口粮按累计游戏天数结算（每3天一次），避免原 tick%floor(3/days) 只扣当帧天数的bug
     G.ecoAccum=(G.ecoAccum||0)+days;
     G.grainAccum=(G.grainAccum||0)+days;
@@ -878,6 +880,8 @@ function updateGame(dtMs) {
     if (G.tick%Math.max(1,Math.floor(5/days))===0) updateAI();
     if (G.tick%Math.max(1,Math.floor(8/days))===0) updateAIOccupation();
     if (G.tick%Math.max(1,Math.floor(3/days))===0) updateFrontlineAdvance(days);
+    // 国际市场 AI 决策（与 updateAI 同频，每 ~5 游戏天）
+    if (G.tick%Math.max(1,Math.floor(5/days))===0 && typeof marketAI === 'function') marketAI();
     checkSurrender();
 
     // Process navy node upgrade timers
@@ -1271,49 +1275,53 @@ outer: for (let d of G.divisions) {
 }
 
 function fireUnits(days) {
-    // id → division 索引（一次性构建，替代每单位线性 find）
+    // id → division 索引（复用 render 维护的持久索引，length 变化时回退重建）
     let divById = null;
     function _divOf(id) {
         if (!divById) {
-            divById = new Map();
-            for (let x of G.divisions) divById.set(x.id, x);
+            divById = G._divIndex;
+            if (!divById || G._divIndexLen !== G.divisions.length) {
+                divById = new Map();
+                for (let x of G.divisions) divById.set(x.id, x);
+            }
         }
         return divById.get(id);
     }
     // Spatial index: group divisions by 0.5° grid cells for fast neighbor lookup
     let CELL = 0.5;
+    // 整数桶 key（世界范围 rx≤12°, ry≤6° → kx,ky∈[0,24]，偏移 100 后唯一）
+    const _bk = (kx, ky) => (kx + 100) * 1000 + (ky + 100);
     let buckets = Object.create(null);
     for (let e of G.divisions) {
         if (e.strength <= 0) continue;
-        let key = Math.floor(e.rx / CELL) + ',' + Math.floor(e.ry / CELL);
+        let key = _bk(Math.floor(e.rx / CELL), Math.floor(e.ry / CELL));
         (buckets[key] || (buckets[key] = [])).push(e);
     }
-    // 建筑网格索引（城市/工厂/海军节点），避免每单位全量扫描
-    let buildBuckets = Object.create(null);
+    // 建筑网格索引（城市/工厂/海军节点三分桶，元素直接存对象，避免每帧 {bt,btype} 分配）
+    let cityBuckets = Object.create(null);
     if (G.cities) {
         for (let cid in G.cities) {
             let c = G.cities[cid];
             if (!c || c.hp <= 0) continue;
-            let key = Math.floor(c.lon / CELL) + ',' + Math.floor(c.lat / CELL);
-            let list = (buildBuckets[key] || (buildBuckets[key] = []));
-            list.push({ bt: c, btype: 'city' });
+            let key = _bk(Math.floor(c.lon / CELL), Math.floor(c.lat / CELL));
+            (cityBuckets[key] || (cityBuckets[key] = [])).push(c);
         }
     }
+    let factBuckets = Object.create(null);
     if (G.factories) {
         for (let f of G.factories) {
             if (!f || f.hp <= 0) continue;
-            let key = Math.floor(f.rx / CELL) + ',' + Math.floor(f.ry / CELL);
-            let list = (buildBuckets[key] || (buildBuckets[key] = []));
-            list.push({ bt: f, btype: 'factory' });
+            let key = _bk(Math.floor(f.rx / CELL), Math.floor(f.ry / CELL));
+            (factBuckets[key] || (factBuckets[key] = [])).push(f);
         }
     }
+    let nodeBuckets = Object.create(null);
     if (G.navyNodes) {
         for (let nid in G.navyNodes) {
             let n = G.navyNodes[nid];
             if (!n || n.hp <= 0) continue;
-            let key = Math.floor(n.lon / CELL) + ',' + Math.floor(n.lat / CELL);
-            let list = (buildBuckets[key] || (buildBuckets[key] = []));
-            list.push({ bt: n, btype: 'node' });
+            let key = _bk(Math.floor(n.lon / CELL), Math.floor(n.lat / CELL));
+            (nodeBuckets[key] || (nodeBuckets[key] = [])).push(n);
         }
     }
 
@@ -1375,12 +1383,54 @@ function fireUnits(days) {
         }
 
         // Focus city: player right-clicked enemy city
+        // 修复：火炮优先攻击建筑附近的敌方士兵，而非建筑本身
         if (!fireTarget && d.focusCity) {
             let fc = G.cities[d.focusCity];
             if (fc && fc.hp > 0 && fc.owner !== d.country && canEngage(d.country, fc.owner)) {
                 let dist = Math.hypot(d.rx - fc.lon, d.ry - fc.lat);
                 if (dist < vRange) {
-                    // Fire at the city — bullet ends exactly at city
+                    // 先搜索城市附近的敌方士兵（半径0.5度内）
+                    let cityEnemy = null, cityEnemyDist = 999;
+                    let _bx = Math.floor(fc.lon / CELL), _by = Math.floor(fc.lat / CELL);
+                    for (let cdx = -1; cdx <= 1; cdx++) {
+                        for (let cdy = -1; cdy <= 1; cdy++) {
+                            let bucket = buckets[_bk(_bx + cdx, _by + cdy)];
+                            if (!bucket) continue;
+                            for (let e of bucket) {
+                                if (e.country === d.country || e.strength <= 0) continue;
+                                if (!canEngage(d.country, e.country)) continue;
+                                if (isSeaType(d.type) && !isSeaType(e.type)) continue;
+                                let eDist = Math.hypot(fc.lon - e.rx, fc.lat - e.ry);
+                                if (eDist < 0.5) {
+                                    let totalDist = Math.hypot(d.rx - e.rx, d.ry - e.ry);
+                                    if (totalDist < vRange && totalDist < cityEnemyDist) {
+                                        cityEnemy = e; cityEnemyDist = totalDist;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (cityEnemy) {
+                        // 优先攻击城市附近的士兵
+                        d.fireCooldown = vFireCd; d.maxFireCd = vFireCd;
+                        let bs = 0.15 * (ut.bulletSpeed || 1);
+                        let dx = cityEnemy.rx - d.rx, dy = cityEnemy.ry - d.ry;
+                        let td = Math.hypot(dx, dy);
+                        G.projectiles.push({
+                            x: d.rx, y: d.ry, type: d.type,
+                            life: td / bs, lifeMax: td / bs,
+                            startX: d.rx, startY: d.ry,
+                            endX: cityEnemy.rx, endY: cityEnemy.ry,
+                            arcUp: d.type === 'artillery', arcHeight: d.type === 'artillery' ? Math.min(0.3, td * 0.5) : 0,
+                            splash: d.type === 'artillery' ? 0.05 : 0.02,
+                            baseDamage: vDamage, shooterCountry: d.country,
+                            targetUnit: { id: cityEnemy.id, rx: cityEnemy.rx, ry: cityEnemy.ry },
+                            targetType: 'unit',
+                        });
+                        if (G.projectiles.length > 50) G.projectiles.shift();
+                        continue;
+                    }
+                    // 城市附近无士兵，才攻击城市
                     d.fireCooldown = vFireCd; d.maxFireCd = vFireCd;
                     let bulletSpeed = 0.15 * (ut.bulletSpeed || 1);
                     let dx = fc.lon - d.rx, dy = fc.lat - d.ry;
@@ -1398,9 +1448,8 @@ function fireUnits(days) {
                     baseDamage: vDamage, shooterCountry: d.country,
                     targetCity: fc, targetType: 'city',
                 });
-                // 限制投射物数量，防止卡顿
                 if (G.projectiles.length > 50) G.projectiles.shift();
-                    continue; // skip to next unit after firing
+                    continue;
                 }
             } else {
                 d.focusCity = null;
@@ -1437,13 +1486,29 @@ function fireUnits(days) {
         }
 
         // Auto-shoot: always scan for any enemy in range (both AI and player)
+        // AI 单位：持久目标锁定（方案A） + 兵种优先级评分（方案B），解决"失忆症"
+        //   - _aiTarget 锁定后持续攻击，目标死亡/不可交战/超出追踪范围(射程×3)才解锁
+        //   - 射程内选目标按优先级打分（反炮击/残血收割/工兵优先，步兵垫底）
+        //   - 玩家单位保持"最近优先"，行为不变
         {
-            let bestE=null,bestD=999;
+            let bestE=null,bestD=999,bestScore=-999;
             let maxRange = vRange * 1.5;
             let bx = Math.floor(d.rx / CELL), by = Math.floor(d.ry / CELL);
+            // AI：维护持久目标有效性
+            if (!isPlayer && d._aiTarget) {
+                let lt = _divOf(d._aiTarget);
+                let lv = false;
+                if (lt && lt.strength > 0 && !lt.submerged && canEngage(d.country, lt.country)) {
+                    if (!(isSeaType(d.type) && !isSeaType(lt.type))) {
+                        let ld = Math.hypot(d.rx - lt.rx, d.ry - lt.ry);
+                        if (ld < vRange * 3) lv = true;
+                    }
+                }
+                if (!lv) { d._aiTarget = null; d._aiTargetAge = 0; }
+            }
             for (let dx = -1; dx <= 1; dx++) {
                 for (let dy = -1; dy <= 1; dy++) {
-                    let bucket = buckets[(bx+dx) + ',' + (by+dy)];
+                    let bucket = buckets[_bk(bx + dx, by + dy)];
                     if (!bucket) continue;
                     for (let e of bucket) {
                         if (e.country === d.country || e.submerged) continue;
@@ -1454,37 +1519,92 @@ function fireUnits(days) {
                         if (ddx > maxRange || ddy > maxRange) continue;
                         if (!canEngage(d.country, e.country)) continue;
                         let dist = Math.hypot(ddx, ddy);
-                        if (dist < vRange && dist < bestD) { bestE = e; bestD = dist; }
+                        if (dist < vRange) {
+                            if (isPlayer) {
+                                // 玩家：最近优先（原逻辑）
+                                if (dist < bestD) { bestE = e; bestD = dist; }
+                            } else {
+                                // AI：目标优先级评分
+                                // 已锁定的目标强保持（避免目标来回切换）
+                                let score = (d._aiTarget === e.id) ? 1000 : 0;
+                                score += 100 - dist * 8;
+                                // 炮兵威胁最大：所有单位优先反制敌方炮兵
+                                if (e.type === 'artillery') score += 30;
+                                // 工兵会修建筑，优先消灭
+                                if (e.type === 'engineer') score += 20;
+                                if (e.type === 'cavalry') score += 5;
+                                // 残血收割
+                                if (typeof isUnitLowHp === 'function' && isUnitLowHp(e)) score += 25;
+                                // 步兵是肉盾，优先级最低
+                                if (e.type === 'infantry' || e.type === 'mountain') score -= 10;
+                                // 骑兵不啃硬骨头：更倾向于收割残血/炮兵，回避步兵正面战
+                                if (d.type === 'cavalry' && (e.type === 'infantry' || e.type === 'mountain')) score -= 15;
+                                if (score > bestScore) { bestScore = score; bestE = e; bestD = dist; }
+                            }
+                        } else if (!isPlayer && dist < bestD) {
+                            // AI 射程外：记录最近候选（供追踪移动靠近，不直接开火）
+                            bestD = dist; bestE = e;
+                        }
                     }
                 }
             }
-            if(bestE && !fireTarget) fireTarget = bestE;
+            if (bestE && !fireTarget) {
+                fireTarget = bestE;
+                if (!isPlayer && bestScore > -999) {
+                    // 射程内目标：锁定（无论是否已有锁定，都更新为当前最优目标）
+                    d._aiTarget = fireTarget.id;
+                    d._aiTargetAge = 0;
+                }
+            } else if (!isPlayer && d._aiTarget) {
+                // 锁定目标当前不在射程：追踪中累计超时（4天打不死自动换目标）
+                d._aiTargetAge = (d._aiTargetAge || 0) + days;
+                if (d._aiTargetAge > 4) { d._aiTarget = null; d._aiTargetAge = 0; }
+            }
         }
 
-        // Auto-target buildings: scan for enemy cities/factories/navy nodes in range（建筑网格索引，3×3 邻格）
+        // Auto-target buildings: scan for enemy cities/factories/navy nodes in range（三分桶，3×3 邻格）
         if (!fireTarget && !d.focusCity && !d.focusFactory) {
             let bTarget = null, bIsCity = false, bIsNode = false;
             let bcx = Math.floor(d.rx / CELL), bcy = Math.floor(d.ry / CELL);
             let bSpan = (vRange > 0.75) ? 2 : 1; // 海军/远程单位扩大搜索范围，防止射程外漏
-            let buildCell;
+            outer:
             for (let bdx = -bSpan; bdx <= bSpan; bdx++) {
                 for (let bdy = -bSpan; bdy <= bSpan; bdy++) {
-                    buildCell = buildBuckets[bcx + bdx + ',' + (bcy + bdy)];
-                    if (!buildCell) continue;
-                    for (let bi = 0; bi < buildCell.length; bi++) {
-                        let bentry = buildCell[bi];
-                        let bt = bentry.bt;
-                        let bx0 = bt.rx !== undefined ? bt.rx : bt.lon;
-                        let by0 = bt.ry !== undefined ? bt.ry : bt.lat;
-                        if (bt.owner === d.country || bt.country === d.country) continue;
-                        if (bt.hp <= 0) continue;
-                        if (!canEngage(d.country, bt.owner || bt.country)) continue;
-                        let dist = Math.hypot(d.rx - bx0, d.ry - by0);
-                        if (dist < vRange) { bTarget = bt; bIsCity = bentry.btype === 'city'; bIsNode = bentry.btype === 'node'; break; }
+                    let ck = _bk(bcx + bdx, bcy + bdy);
+                    let cell = cityBuckets[ck];
+                    if (cell) {
+                        for (let bi = 0; bi < cell.length; bi++) {
+                            let bt = cell[bi];
+                            if (bt.owner === d.country || bt.country === d.country) continue;
+                            if (bt.hp <= 0) continue;
+                            if (!canEngage(d.country, bt.owner || bt.country)) continue;
+                            let dist = Math.hypot(d.rx - bt.lon, d.ry - bt.lat);
+                            if (dist < vRange) { bTarget = bt; bIsCity = true; break outer; }
+                        }
                     }
-                    if (bTarget) break;
+                    cell = factBuckets[ck];
+                    if (cell) {
+                        for (let bi = 0; bi < cell.length; bi++) {
+                            let bt = cell[bi];
+                            if (bt.owner === d.country || bt.country === d.country) continue;
+                            if (bt.hp <= 0) continue;
+                            if (!canEngage(d.country, bt.owner || bt.country)) continue;
+                            let dist = Math.hypot(d.rx - bt.rx, d.ry - bt.ry);
+                            if (dist < vRange) { bTarget = bt; break outer; }
+                        }
+                    }
+                    cell = nodeBuckets[ck];
+                    if (cell) {
+                        for (let bi = 0; bi < cell.length; bi++) {
+                            let bt = cell[bi];
+                            if (bt.owner === d.country || bt.country === d.country) continue;
+                            if (bt.hp <= 0) continue;
+                            if (!canEngage(d.country, bt.owner || bt.country)) continue;
+                            let dist = Math.hypot(d.rx - bt.lon, d.ry - bt.lat);
+                            if (dist < vRange) { bTarget = bt; bIsNode = true; break outer; }
+                        }
+                    }
                 }
-                if (bTarget) break;
             }
             if (bTarget) {
                 d.fireCooldown = vFireCd; d.maxFireCd = vFireCd;
@@ -1522,12 +1642,21 @@ function fireUnits(days) {
         }
 
         // Auto-lock scan (AI only — track far enemies visually)
+        // 持久目标优先：有 _aiTarget 且未超追踪范围(2°)时直接锁定它，让单位持续追击
+        if (!isPlayer && !lockTarget && d._aiTarget) {
+            let lt = _divOf(d._aiTarget);
+            if (lt && lt.strength > 0 && !lt.submerged && canEngage(d.country, lt.country) &&
+                !(isSeaType(d.type) && !isSeaType(lt.type))) {
+                let ld = Math.hypot(d.rx - lt.rx, d.ry - lt.ry);
+                if (ld < 2.0) lockTarget = lt;
+            }
+        }
         if (!isPlayer && !lockTarget) {
             let bestL=null,bestDL=999;
             let bx = Math.floor(d.rx / CELL), by = Math.floor(d.ry / CELL);
             for (let dx = -2; dx <= 2; dx++) {
                 for (let dy = -2; dy <= 2; dy++) {
-                    let bucket = buckets[(bx+dx) + ',' + (by+dy)];
+                    let bucket = buckets[_bk(bx + dx, by + dy)];
                     if (!bucket) continue;
                     for (let e of bucket) {
                         if (e.country === d.country || e.submerged) continue;
@@ -1657,7 +1786,7 @@ function fireUnits(days) {
         let bx = Math.floor(city.lon / CELL), by = Math.floor(city.lat / CELL);
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
-                let bucket = buckets[(bx+dx) + ',' + (by+dy)];
+                let bucket = buckets[_bk(bx + dx, by + dy)];
                 if (!bucket) continue;
                 for (let e of bucket) {
                     if (e.country === city.owner) continue;
@@ -1669,19 +1798,21 @@ function fireUnits(days) {
         }
         if (!bestE) continue;
         city.fireCooldown = vFireCd;
-        let bs = 0.15;
+        // 城市子弹：加速（0.15→0.45）、寿命加大（×2.5 保证追踪命中）、带跟踪效果
+        let bs = 0.45;
         let dx = bestE.rx - city.lon, dy = bestE.ry - city.lat;
         let td = Math.hypot(dx, dy);
         let ex = bestE.rx, ey = bestE.ry;
         G.projectiles.push({
             x: city.lon, y: city.lat, type: 'infantry',
-            life: td / bs, lifeMax: td / bs,
+            life: td / bs * 2.5, lifeMax: td / bs * 2.5,
             startX: city.lon, startY: city.lat,
             endX: ex, endY: ey,
             arcUp: false, arcHeight: 0,
             splash: 0.02,
             baseDamage: vDamage, shooterCountry: city.owner,
             red: true,
+            tracking: true, targetDivId: bestE.id, // 子弹跟踪目标，移动中也能命中
         });
         if (G.projectiles.length > 50) G.projectiles.shift();
     }
@@ -1738,12 +1869,18 @@ function updateProjectiles(days) {
 
     // Spatial index: 0.5° grid for fast O(1) neighbor lookup (only when needed)
     const CELL = 0.5;
+    // 整数桶 key（世界范围 rx≤12°, ry≤6° → kx,ky∈[0,24]，偏移 100 后唯一）
+    const _bk = (kx, ky) => (kx + 100) * 1000 + (ky + 100);
     const buckets = Object.create(null);
-    const _divById2 = new Map();
+    // 复用 render 维护的持久师团索引（length 变化时回退重建）
+    let _divById2 = G._divIndex;
+    if (!_divById2 || G._divIndexLen !== G.divisions.length) {
+        _divById2 = new Map();
+        for (const e of G.divisions) { _divById2.set(e.id, e); _divById2.set('' + e.id, e); }
+    }
     for (const e of G.divisions) {
-        _divById2.set(e.id, e);
         if (e.strength <= 0) continue;
-        const key = Math.floor(e.rx / CELL) + ',' + Math.floor(e.ry / CELL);
+        const key = _bk(Math.floor(e.rx / CELL), Math.floor(e.ry / CELL));
         (buckets[key] || (buckets[key] = [])).push(e);
     }
     function _nearDivs(cx, cy, range) {
@@ -1754,7 +1891,7 @@ function updateProjectiles(days) {
         const maxKy = Math.floor((cy + range) / CELL);
         for (let kx = minKx; kx <= maxKx; kx++) {
             for (let ky = minKy; ky <= maxKy; ky++) {
-                const cell = buckets[kx + ',' + ky];
+                const cell = buckets[_bk(kx, ky)];
                 if (cell) {
                     for (let i = 0; i < cell.length; i++) result.push(cell[i]);
                 }
@@ -1763,75 +1900,79 @@ function updateProjectiles(days) {
         return result;
     }
 
-    G.projectiles=G.projectiles.filter(p=>{
-        p.life-=days;
-        if(p.life<=0){
+    // 原地过滤（倒序 splice），替代 filter 每帧新数组
+    for (let pi = G.projectiles.length - 1; pi >= 0; pi--) {
+        const p = G.projectiles[pi];
+        p.life -= days;
+        if (p.life <= 0) {
             // 终点先检测直接命中，再生成溅射/火焰
             let finBX = p.tracking ? p.x : p.startX + (p.endX - p.startX);
             let finBY = p.tracking ? p.y : p.startY + (p.endY - p.startY);
-            let finArc=p.arcUp?p.arcHeight*Math.sin(Math.PI):0;
-            let hit=false;
-            let uhr2=Math.max(0.01,20/(typeof PIXELS_PER_DEGREE!=='undefined'?Math.max(0.1,zoom):1)/(PIXELS_PER_DEGREE||111));
-            for(let d of _nearDivs(finBX, finBY, uhr2 * 3)){
-                if(d.country===p.shooterCountry||d.strength<=0||d.submerged) continue;
-                let dx=Math.abs(finBX-d.rx),dy=Math.abs(finBY-d.ry);
-                if(Math.hypot(dx,dy)<uhr2){
-                    if(Math.random()<navyDodgeRate(d)) continue;
-                    d.strength=Math.max(0,d.strength-cmdDamageReduced(d,p.baseDamage));d.hitFlash=6;
-                    if(d.strength<=0){let msg=d.type==='navy'||d.type==='submarine'?(d.name+" 💀⚓"):(d.name+" 被命中消灭");removeDivision(d);addGameLog(msg);}
-                    hit=true;break;
+            let finArc = p.arcUp ? p.arcHeight * Math.sin(Math.PI) : 0;
+            let hit = false;
+            let uhr2 = Math.max(0.01, 20 / (typeof PIXELS_PER_DEGREE !== 'undefined' ? Math.max(0.1, zoom) : 1) / (PIXELS_PER_DEGREE || 111));
+            for (let d of _nearDivs(finBX, finBY, uhr2 * 3)) {
+                if (d.country === p.shooterCountry || d.strength <= 0 || d.submerged) continue;
+                let dx = Math.abs(finBX - d.rx), dy = Math.abs(finBY - d.ry);
+                if (dx * dx + dy * dy < uhr2 * uhr2) {
+                    if (Math.random() < navyDodgeRate(d)) continue;
+                    d.strength = Math.max(0, d.strength - cmdDamageReduced(d, p.baseDamage)); d.hitFlash = 6;
+                    if (d.strength <= 0) { let msg = d.type === 'navy' || d.type === 'submarine' ? (d.name + " 💀⚓") : (d.name + " 被命中消灭"); removeDivision(d); addGameLog(msg); }
+                    hit = true; break;
                 }
             }
-            let finPX=finBX,finPY=finBY+finArc;
-            if(!hit&&p.targetType==='city'&&p.targetCity){
-                let city=p.targetCity;
-                let thr2=Math.max(0.006,0.015/(typeof zoom!=='undefined'?Math.max(0.1,zoom):1));
-                if(Math.hypot(finPX-city.lon,finPY-city.lat)<thr2){
-                    city.hp=Math.max(0,city.hp-p.baseDamage);if(city.hp<=0) handleCityCapture(city);hit=true;
+            let finPX = finBX, finPY = finBY + finArc;
+            if (!hit && p.targetType === 'city' && p.targetCity) {
+                let city = p.targetCity;
+                let thr2 = Math.max(0.006, 0.015 / (typeof zoom !== 'undefined' ? Math.max(0.1, zoom) : 1));
+                if (Math.hypot(finPX - city.lon, finPY - city.lat) < thr2) {
+                    city.hp = Math.max(0, city.hp - p.baseDamage); if (city.hp <= 0) handleCityCapture(city); hit = true;
                 }
             }
-            if(!hit&&p.targetType==='factory'&&p.targetFactory){
-                let fact=p.targetFactory;
-                let thr2=Math.max(0.006,0.015/(typeof zoom!=='undefined'?Math.max(0.1,zoom):1));
-                if(fact.hp>0&&Math.hypot(finPX-fact.rx,finPY-fact.ry)<thr2){
-                    fact.hp=Math.max(0,fact.hp-p.baseDamage);
-                    if(fact.hp<=0){let pd=G.provinceData[fact.provinceId];if(pd)pd.factories=Math.max(0,(pd.factories||1)-1);addGameLog(getProvinceName({id:fact.provinceId})+" 的工厂被摧毁");let idx=G.factories.indexOf(fact);if(idx>=0)G.factories.splice(idx,1);}
-                    hit=true;
+            if (!hit && p.targetType === 'factory' && p.targetFactory) {
+                let fact = p.targetFactory;
+                let thr2 = Math.max(0.006, 0.015 / (typeof zoom !== 'undefined' ? Math.max(0.1, zoom) : 1));
+                if (fact.hp > 0 && Math.hypot(finPX - fact.rx, finPY - fact.ry) < thr2) {
+                    fact.hp = Math.max(0, fact.hp - p.baseDamage);
+                    if (fact.hp <= 0) { let pd = G.provinceData[fact.provinceId]; if (pd) pd.factories = Math.max(0, (pd.factories || 1) - 1); addGameLog(getProvinceName({ id: fact.provinceId }) + " 的工厂被摧毁"); let idx = G.factories.indexOf(fact); if (idx >= 0) G.factories.splice(idx, 1); }
+                    hit = true;
                 }
             }
-            if(!hit&&p.targetType==='navynode'&&p.targetNode&&G.navyNodes){
-                let node=G.navyNodes[p.targetNode];
-                let thr2=Math.max(0.006,0.015/(typeof zoom!=='undefined'?Math.max(0.1,zoom):1));
-                if(node&&node.hp>0&&Math.hypot(finPX-node.lon,finPY-node.lat)<thr2){
-                    node.hp=Math.max(0,node.hp-p.baseDamage);
-                    if(node.hp<=0){
+            if (!hit && p.targetType === 'navynode' && p.targetNode && G.navyNodes) {
+                let node = G.navyNodes[p.targetNode];
+                let thr2 = Math.max(0.006, 0.015 / (typeof zoom !== 'undefined' ? Math.max(0.1, zoom) : 1));
+                if (node && node.hp > 0 && Math.hypot(finPX - node.lon, finPY - node.lat) < thr2) {
+                    node.hp = Math.max(0, node.hp - p.baseDamage);
+                    if (node.hp <= 0) {
                         delete G.navyNodes[p.targetNode];
                         addGameLog("⚓ " + node.name + " 海军节点被摧毁，已消失");
                         if (G.selectedNavyNode === p.targetNode) { G.selectedNavyNode = null; G.selectedNavyNodeOnMap = false; }
                     }
-                    hit=true;
+                    hit = true;
                 }
             }
-            if(!hit&&p.splash&&p.splash>0){
-                if(p.arcUp){
-                    if(!G.fireZones)G.fireZones=[];
-                    G.fireZones.push({x:p.endX,y:p.endY,radius:0.08,life:1,lifeMax:1,damage:13,shooterCountry:p.shooterCountry});
-                    if(G.fireZones.length>20)G.fireZones.shift();
+            if (!hit && p.splash && p.splash > 0) {
+                if (p.arcUp) {
+                    if (!G.fireZones) G.fireZones = [];
+                    G.fireZones.push({ x: p.endX, y: p.endY, radius: 0.08, life: 1, lifeMax: 1, damage: 13, shooterCountry: p.shooterCountry });
+                    if (G.fireZones.length > 20) G.fireZones.shift();
                 }
-                let splashRadius=p.splash;
-                let splashDamage=p.baseDamage*0.5;
-                for(let d of _nearDivs(p.endX, p.endY, splashRadius)){
-                    if(d.country===p.shooterCountry) continue;
-                    let dx=Math.abs(p.endX-d.rx),dy=Math.abs(p.endY-d.ry);
-                    let dist=Math.hypot(dx,dy);
-                    if(dist<splashRadius){
-                        d.strength=Math.max(0,d.strength-cmdDamageReduced(d,splashDamage*(1-(dist/splashRadius)*0.5)));
-                        d.hitFlash=6;
-                        if(d.strength<=0){let msg=d.type==='navy'||d.type==='submarine'?(d.name+" 💀⚓"):(d.name+" 被溅射消灭");removeDivision(d);addGameLog(msg);}
+                let splashRadius = p.splash;
+                let splashDamage = p.baseDamage * 0.5;
+                for (let d of _nearDivs(p.endX, p.endY, splashRadius)) {
+                    if (d.country === p.shooterCountry) continue;
+                    let dx = Math.abs(p.endX - d.rx), dy = Math.abs(p.endY - d.ry);
+                    let distSq = dx * dx + dy * dy;
+                    if (distSq < splashRadius * splashRadius) {
+                        let dist = Math.sqrt(distSq);
+                        d.strength = Math.max(0, d.strength - cmdDamageReduced(d, splashDamage * (1 - (dist / splashRadius) * 0.5)));
+                        d.hitFlash = 6;
+                        if (d.strength <= 0) { let msg = d.type === 'navy' || d.type === 'submarine' ? (d.name + " 💀⚓") : (d.name + " 被溅射消灭"); removeDivision(d); addGameLog(msg); }
                     }
                 }
             }
-            return false;
+            G.projectiles.splice(pi, 1);
+            continue;
         }
         if (p.tracking && p.targetDivId) {
             let trg = _divById2.get(p.targetDivId);
@@ -1842,69 +1983,83 @@ function updateProjectiles(days) {
                 p.life = 0;
             }
         }
-        let t=1-(p.life/p.lifeMax);
-        p.progress=t;
-        let baseX=p.startX+(p.endX-p.startX)*t;
-        let baseY=p.startY+(p.endY-p.startY)*t;
-        let arcOffset=0;
-        if(p.arcUp) arcOffset=p.arcHeight*Math.sin(t*Math.PI);
-        p.x=baseX;p.y=baseY+arcOffset;
+        let t = 1 - (p.life / p.lifeMax);
+        p.progress = t;
+        let baseX = p.startX + (p.endX - p.startX) * t;
+        let baseY = p.startY + (p.endY - p.startY) * t;
+        let arcOffset = 0;
+        if (p.arcUp) arcOffset = p.arcHeight * Math.sin(t * Math.PI);
+        p.x = baseX; p.y = baseY + arcOffset;
         let unitHitRadius = Math.max(0.01, 20 / (typeof PIXELS_PER_DEGREE !== 'undefined' ? Math.max(0.1, zoom) : 1) / (PIXELS_PER_DEGREE || 111));
-        for(let d of _nearDivs(p.x, p.y, unitHitRadius * 3)){
-            if(d.country===p.shooterCountry||d.strength<=0||d.submerged) continue;
+        let uhrSq = unitHitRadius * unitHitRadius;
+        let killed = false;
+        for (let d of _nearDivs(p.x, p.y, unitHitRadius * 3)) {
+            if (d.country === p.shooterCountry || d.strength <= 0 || d.submerged) continue;
             let dx = Math.abs(p.x - d.rx);
             let dy = Math.abs(p.y - d.ry);
-            if(Math.hypot(dx, dy)<unitHitRadius){
+            if (dx * dx + dy * dy < uhrSq) {
                 // Maneuver dodge check (navy ships)
                 if (Math.random() < navyDodgeRate(d)) continue;
-                d.strength=Math.max(0,d.strength-p.baseDamage);
-                d.hitFlash=6;
-                if(d.strength<=0){
+                d.strength = Math.max(0, d.strength - p.baseDamage);
+                d.hitFlash = 6;
+                if (d.strength <= 0) {
                     let msg = d.type === 'navy' || d.type === 'submarine' ? (d.name + " 💀⚓") : (d.name + " 被命中消灭");
                     removeDivision(d); addGameLog(msg);
                 }
-                return false;
+                killed = true;
+                break;
             }
         }
+        if (killed) { G.projectiles.splice(pi, 1); continue; }
         // Check city/factory hit
         let targetHitRadius = Math.max(0.006, 0.015 / (typeof zoom !== 'undefined' ? Math.max(0.1, zoom) : 1));
+        let thrSq = targetHitRadius * targetHitRadius;
         if (p.targetType === 'city' && p.targetCity) {
             let city = p.targetCity;
-            if (Math.hypot(p.x - city.lon, p.y - city.lat) < targetHitRadius) {
+            let cdx = p.x - city.lon, cdy = p.y - city.lat;
+            if (cdx * cdx + cdy * cdy < thrSq) {
                 city.hp = Math.max(0, city.hp - p.baseDamage);
                 if (city.hp <= 0) handleCityCapture(city);
-                return false;
+                G.projectiles.splice(pi, 1);
+                continue;
             }
         }
         if (p.targetType === 'factory' && p.targetFactory) {
             let fact = p.targetFactory;
-            if (fact.hp > 0 && Math.hypot(p.x - fact.rx, p.y - fact.ry) < targetHitRadius) {
-                fact.hp = Math.max(0, fact.hp - p.baseDamage);
-                if (fact.hp <= 0) {
-                    let pd = G.provinceData[fact.provinceId];
-                    if (pd) pd.factories = Math.max(0, (pd.factories || 1) - 1);
-                    addGameLog(getProvinceName({id:fact.provinceId}) + " 的工厂被摧毁");
-                    let idx = G.factories.indexOf(fact);
-                    if (idx >= 0) G.factories.splice(idx, 1);
+            if (fact.hp > 0) {
+                let fdx = p.x - fact.rx, fdy = p.y - fact.ry;
+                if (fdx * fdx + fdy * fdy < thrSq) {
+                    fact.hp = Math.max(0, fact.hp - p.baseDamage);
+                    if (fact.hp <= 0) {
+                        let pd = G.provinceData[fact.provinceId];
+                        if (pd) pd.factories = Math.max(0, (pd.factories || 1) - 1);
+                        addGameLog(getProvinceName({ id: fact.provinceId }) + " 的工厂被摧毁");
+                        let idx = G.factories.indexOf(fact);
+                        if (idx >= 0) G.factories.splice(idx, 1);
+                    }
+                    G.projectiles.splice(pi, 1);
+                    continue;
                 }
-                return false;
             }
         }
         // Check navy node hit：生命归零直接消失
         if (p.targetType === 'navynode' && p.targetNode && G.navyNodes) {
             let node = G.navyNodes[p.targetNode];
-            if (node && node.hp > 0 && Math.hypot(p.x - node.lon, p.y - node.lat) < targetHitRadius) {
-                node.hp = Math.max(0, node.hp - p.baseDamage);
-                if (node.hp <= 0) {
-                    delete G.navyNodes[p.targetNode];
-                    addGameLog("⚓ " + node.name + " 海军节点被摧毁，已消失");
-                    if (G.selectedNavyNode === p.targetNode) { G.selectedNavyNode = null; G.selectedNavyNodeOnMap = false; }
+            if (node && node.hp > 0) {
+                let ndx = p.x - node.lon, ndy = p.y - node.lat;
+                if (ndx * ndx + ndy * ndy < thrSq) {
+                    node.hp = Math.max(0, node.hp - p.baseDamage);
+                    if (node.hp <= 0) {
+                        delete G.navyNodes[p.targetNode];
+                        addGameLog("⚓ " + node.name + " 海军节点被摧毁，已消失");
+                        if (G.selectedNavyNode === p.targetNode) { G.selectedNavyNode = null; G.selectedNavyNodeOnMap = false; }
+                    }
+                    G.projectiles.splice(pi, 1);
+                    continue;
                 }
-                return false;
             }
         }
-        return true;
-    });
+    }
 }
 
 function updateFireZones(days) {
@@ -1918,14 +2073,14 @@ function updateFireZones(days) {
             divBuckets = Object.create(null);
             for (let d of G.divisions) {
                 if (d.strength <= 0 || d.rx === undefined) continue;
-                let k = Math.floor(d.rx / 0.5) + ',' + Math.floor(d.ry / 0.5);
+                let k = (Math.floor(d.rx / 0.5) + 100) * 1000 + (Math.floor(d.ry / 0.5) + 100);
                 (divBuckets[k] || (divBuckets[k] = [])).push(d);
             }
         }
         let bx = Math.floor(fz.x / 0.5), by = Math.floor(fz.y / 0.5);
         for (let dx = -1; dx <= 1; dx++) {
             for (let dy = -1; dy <= 1; dy++) {
-                let b = divBuckets[bx + dx + ',' + (by + dy)];
+                let b = divBuckets[(bx + dx + 100) * 1000 + (by + dy + 100)];
                 if (!b) continue;
                 for (let d of b) {
                     if (d.country === fz.shooterCountry || d.strength <= 0) continue;
@@ -1969,7 +2124,7 @@ function updateNeutralCityCapture(days) {
             divBuckets = Object.create(null);
             for (let d of G.divisions) {
                 if (d.strength <= 0 || d.rx === undefined) continue;
-                let k = Math.floor(d.rx / 0.5) + ',' + Math.floor(d.ry / 0.5);
+                let k = (Math.floor(d.rx / 0.5) + 100) * 1000 + (Math.floor(d.ry / 0.5) + 100);
                 (divBuckets[k] || (divBuckets[k] = [])).push(d);
             }
         }
@@ -1977,7 +2132,7 @@ function updateNeutralCityCapture(days) {
         let captured = false;
         for (let dx = -1; dx <= 1 && !captured; dx++) {
             for (let dy = -1; dy <= 1 && !captured; dy++) {
-                let b = divBuckets[bx + dx + ',' + (by + dy)];
+                let b = divBuckets[(bx + dx + 100) * 1000 + (by + dy + 100)];
                 if (!b) continue;
                 for (let d of b) {
                     let dist = Math.hypot(city.lon - (d.rx || 0), city.lat - (d.ry || 0));
@@ -2147,6 +2302,15 @@ function processBuildQueue(dtMs) {
             let itemCountry = q[i].country || G.playerCountry;
             if (q[i].type === 'unit') {
                 if (!itemCountry) continue;
+                // 检查城市血量：<50%时禁止生产士兵
+                let cityObj = G.cities[q[i].cityId];
+                if (cityObj && (cityObj.hp || 0) < (cityObj.maxHp || 100) * 0.5) {
+                    // 城市血量过低，取消生产（输出日志）
+                    addGameLog("城市" + (cityObj.name || '') + "血量过低，生产取消");
+                    q.splice(i, 1);
+                    i--;
+                    continue;
+                }
                 // 单位生产完成
                 let d = createDivision(q[i].province, itemCountry, q[i].unitType, true);
                 if (d) {
@@ -2623,219 +2787,7 @@ function distPointToLine(px, py, x1, y1, x2, y2) {
 }
 
 // ===== AI functions (also defined in js/ai/ai_controller.js) =====
-function updateAI() {
-    let cs=G.countries;
-    // 联机模式下，人类玩家控制的国家不运行AI
-    let humanCountries = G.multiplayerHumanCountries && G.multiplayerHumanCountries.length > 0 ? G.multiplayerHumanCountries : [G.playerCountry];
-    let allCountries = Object.keys(cs).filter(c => !humanCountries.includes(c) && cs[c].treasury !== undefined);
-
-    // GERMANY SPECIAL: If Germany is not human-controlled, Germany is aggressive toward France
-    let germanyIsHuman = humanCountries.includes('GERMANY');
-    // AI Germany declares war on France + Belgium on Aug 3 1914 if Germany is AI-controlled
-    if (!germanyIsHuman && !G.germanyDeclaredWar && G.date >= new Date(1914, 7, 3)) {
-        G.germanyDeclaredWar = true;
-        if (!areAtWar('GERMANY', 'FRANCE')) declareWar('GERMANY', 'FRANCE');
-        if (!areAtWar('GERMANY', 'BELGIUM')) declareWar('GERMANY', 'BELGIUM');
-        G.newsBanner = "⚔️ 德意志帝国向法国和比利时宣战！";
-        G.newsTimer = 600;
-    }
-
-    for (let co of allCountries) {
-        let cd=cs[co];
-        if (!cd) continue;
-
-        let atWar = isCountryAtWar(co);
-        let atWarWithList = getEnemiesOf(co);
-
-        let enemyCount = 0;
-        for (let enemy of atWarWithList) {
-            enemyCount += G.divisions.filter(d => d.country === enemy && d.strength > 0).length;
-        }
-        let myCount = G.divisions.filter(d => d.country === co && d.strength > 0).length;
-
-        let myProvinceCenters = getCountryProvinces(co).filter(p=>p.center).map(p=>p.center);
-        let enemyInTerritory = atWar && G.divisions.some(d => {
-            if (d.country === co || d.strength <= 0) return false;
-            let isEnemy = atWarWithList.includes(d.country);
-            if (!isEnemy) return false;
-            return myProvinceCenters.some(ctr => Math.hypot(d.rx-ctr[0], d.ry-ctr[1]) < 1.5);
-        });
-
-        let inDanger = atWar && (myCount < enemyCount * 0.8 || enemyInTerritory);
-
-        // France special: much more responsive to German threat
-        let franceBonus = (co === 'FRANCE' && atWar) ? 0.3 : 0;
-        let trainChance = inDanger ? 0.8 + franceBonus : atWar ? 0.4 + franceBonus : 0.12;
-        let maxDivs = inDanger ? 100 : atWar ? 60 : 25;
-        let minTreasury = 20;
-
-        if (cd.treasury > minTreasury && cd.divCount < maxDivs && Math.random() < trainChance) {
-            let ps = getCountryProvinces(co).filter(p => p.garrison < 3);
-            if (ps.length > 0) {
-                let affordable = [];
-                for (let ut of ['infantry','engineer','cavalry','artillery','mountain','airplane']) {
-                    if (cd.treasury >= UNIT_TYPES[ut].cost * 1.15) affordable.push(ut);
-                }
-                if (cd.treasury >= UNIT_TYPES.navy.cost * 1.15 && NAVAL_BASES && NAVAL_BASES.some(nb => nb.country === co)) {
-                    affordable.push('navy');
-                }
-                if (affordable.length > 0) {
-                    let type = affordable[Math.floor(Math.random() * affordable.length)];
-                    if (inDanger && affordable.includes('artillery') && Math.random() > 0.4) type = 'artillery';
-                    let prov = ps[Math.floor(Math.random()*ps.length)];
-                    if (type === 'navy') {
-                        let nbCountry = NAVAL_BASES ? NAVAL_BASES.filter(nb => nb.country === co) : [];
-                        if (nbCountry.length > 0) {
-                            let nb = nbCountry[Math.floor(Math.random() * nbCountry.length)];
-                            let bestProv = null, bestDist = 999;
-                            for (let pid in G.provinceData) {
-                                let pd = G.provinceData[pid];
-                                if (!pd || !pd.center) continue;
-                                let dist = Math.hypot(nb.lon - pd.center[0], nb.lat - pd.center[1]);
-                                if (dist < bestDist) { bestDist = dist; bestProv = pd; }
-                            }
-                            if (bestProv) prov = bestProv;
-                        }
-                    }
-                    if (type === 'navy' && typeof GREAT_NAVY_POWERS !== 'undefined' && GREAT_NAVY_POWERS.includes(co) && typeof createShip === 'function') {
-                        // Great powers: build named ship via navy node system
-                        let myNodeIds = Object.keys(G.navyNodes || {}).filter(id => G.navyNodes[id].country === co);
-                        if (myNodeIds.length > 0) {
-                            let nodeId = myNodeIds[Math.floor(Math.random() * myNodeIds.length)];
-                            let node = G.navyNodes[nodeId];
-                            if (cd.treasury >= 500 && cd.manpower >= 5) {
-                                cd.treasury -= 500;
-                                cd.manpower -= 5;
-                                let ship = createShip(nodeId, co);
-                                if (ship) {
-                                    let seaPos = findSeaPosition(node.lon, node.lat);
-                                    let bestProv = findNearestProvince(node.lon, node.lat);
-                                    if (bestProv) {
-                                        let divName = generateUnitName(co, 'navy') + ' ' + ship.name;
-                                        let _div2 = {
-                                            id: G.divIdCounter++, name: divName,
-                                            type: 'navy', province: bestProv, country: co,
-                                            rx: seaPos[0], ry: seaPos[1],
-                                            state: 'idle', targetX: null, targetY: null,
-                                            attackTarget: null, focusTarget: null, focusFactory: null, focusCity: null,
-                                            fireCooldown: 0, maxFireCd: 0, exp: 0,
-                                            shipId: ship.id,
-                                            facing: 'e',
-                                        };
-                                        applyNavyShipStats(_div2, ship);
-                                        G.divisions.push(_div2);
-                                        let pd = G.provinceData[bestProv];
-                                        if (pd) pd.garrison = (pd.garrison || 0) + 1;
-                                        cd.divCount = (cd.divCount || 0) + 1;
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        createDivision(prov.id, co, type);
-                    }
-                }
-            }
-        }
-
-        // AI patrol: station units at border provinces with enemy
-        if (atWar && co !== 'FRANCE' && co !== 'UK' && myCount > 5 && Math.random() < 0.02) {
-            let borderProvs = getCountryProvinces(co).filter(p => {
-                if (!p.center) return false;
-                return G.divisions.some(e => {
-                    if (e.country === co || e.strength <= 0) return false;
-                    let atWar = atWarWithList.includes(e.country);
-                    if (!atWar) return false;
-                    return Math.hypot(p.center[0] - e.rx, p.center[1] - e.ry) < 1.5;
-                });
-            });
-            if (borderProvs.length > 0) {
-                let idleUnits = G.divisions.filter(d => d.country === co && d.state === 'idle' && d.strength > 0 && !G.patrolTargets[d.id]);
-                if (idleUnits.length > 0) {
-                    let unit = idleUnits[Math.floor(Math.random() * idleUnits.length)];
-                    let targetProv = borderProvs[Math.floor(Math.random() * borderProvs.length)];
-                    G.patrolTargets[unit.id] = [targetProv.id];
-                }
-            }
-        }
-    }
-
-    // SECOND PHASE: AI ATTACK MOVEMENT
-    let humanCountries2 = G.multiplayerHumanCountries && G.multiplayerHumanCountries.length > 0 ? G.multiplayerHumanCountries : [G.playerCountry];
-    for (let d of G.divisions) {
-        if (d.state==='moving' || d.strength <= 0) continue;
-        if (humanCountries2.includes(d.country)) continue;
-        // Navies on land cannot move in AI phase (wait for player command)
-            if (isSeaType(d.type) && typeof isLandPoint === 'function' && isLandPoint(d.rx, d.ry)) continue;
-        // France and UK are defensive
-        if (d.country === 'FRANCE' || d.country === 'UK') {
-            let en = isCountryAtWar(d.country);
-            if (!en) continue;
-            let nearestEnemy = null, bestDist = 999;
-            for (let e of G.divisions) {
-                if (e.country === d.country || e.strength <= 0) continue;
-                let atWarWith = canEngage(d.country, e.country);
-                if (!atWarWith) continue;
-                let dist = Math.hypot(d.rx - e.rx, d.ry - e.ry);
-                if (dist < bestDist) { nearestEnemy = e; bestDist = dist; }
-            }
-            if (!nearestEnemy) continue;
-            // France/UK: engage if enemy is reasonably close
-            if (bestDist < 5 && Math.random() < 0.3) {
-                d.state = "moving";
-                let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
-                let desiredDist = ut.range * 0.9;
-                let dx = nearestEnemy.rx - d.rx, dy = nearestEnemy.ry - d.ry;
-                let dist = Math.hypot(dx, dy);
-                let tx = d.rx + (dx/dist) * (dist - desiredDist);
-                let ty = d.ry + (dy/dist) * (dist - desiredDist);
-                if (isSeaType(d.type) && typeof isLandPoint === 'function' && isLandPoint(tx, ty)) continue;
-                d.targetX = tx; d.targetY = ty;
-            }
-            continue;
-        }
-
-        // Other countries: check at war
-        let isAtWar = isCountryAtWar(d.country);
-        if (!isAtWar) continue;
-
-        // If player is not Germany, AI Germany invades Belgium by late 1914 (already handled via date check above)
-
-        let target=null, bestDist=999;
-        for (let e of G.divisions) {
-            if (e.country===d.country || e.strength<=0) continue;
-            let atWarWith = canEngage(d.country, e.country);
-            if (!atWarWith) continue;
-            let dist=Math.hypot(d.rx-e.rx,d.ry-e.ry);
-            if (dist<bestDist) { target=e; bestDist=dist; }
-        }
-        if (!target) continue;
-
-        let engageRate = d.country === 'GERMANY' ? 0.45 : 0.3;
-        if (bestDist < 6 && Math.random() < engageRate) {
-            d.state="moving";
-            let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
-            let desiredDist = ut.range * 0.9;
-            let dx = target.rx - d.rx, dy = target.ry - d.ry;
-            let dist = Math.hypot(dx, dy);
-            let tx = d.rx + (dx/dist) * (dist - desiredDist);
-            let ty = d.ry + (dy/dist) * (dist - desiredDist);
-            if (isSeaType(d.type) && typeof isLandPoint === 'function' && isLandPoint(tx, ty)) continue;
-            d.targetX = tx; d.targetY = ty;
-        }
-        if (bestDist > 10 && Math.random() < 0.04) {
-            d.state = "moving";
-            let ut = UNIT_TYPES[d.type] || UNIT_TYPES.infantry;
-            let desiredDist = ut.range * 0.9;
-            let dx = target.rx - d.rx, dy = target.ry - d.ry;
-            let dist = Math.hypot(dx, dy);
-            let tx = d.rx + (dx/dist) * (dist - desiredDist);
-            let ty = d.ry + (dy/dist) * (dist - desiredDist);
-            if (isSeaType(d.type) && typeof isLandPoint === 'function' && isLandPoint(tx, ty)) continue;
-            d.targetX = tx; d.targetY = ty;
-        }
-    }
-}// AI functions moved to js/ai/ai_controller.js
+// AI functions moved to js/ai/ai_controller.js — updateAI() is now defined in ai_controller.js
 
 // ===== 新前线系统：指挥线 =====
 // 多前线颜色（不同深浅的橙色）
@@ -3237,85 +3189,7 @@ function updateEngineerRepair(days) {
 }
 
 // ===== AI Occupation: capture undefended enemy provinces =====
-function updateAIOccupation() {
-    let humanCountries = G.multiplayerHumanCountries && G.multiplayerHumanCountries.length > 0 ? G.multiplayerHumanCountries : [G.playerCountry];
-    let allCountries = Object.keys(G.countries).filter(c =>
-        !humanCountries.includes(c) &&
-        G.countries[c].treasury !== undefined && !G.surrendered[c]
-    );
-
-    for (let co of allCountries) {
-        // Find idle units not on patrol
-        let idleUnits = G.divisions.filter(d =>
-            d.country === co && d.strength > 0 &&
-            d.state !== 'moving' &&
-            !G.patrolTargets[d.id]
-        );
-        if (idleUnits.length < 2) continue; // need at least some spare units
-
-        // Find undefended enemy provinces adjacent to our territory
-        let ownedProvIds = Object.values(G.provinceData)
-            .filter(p => p.country === co && p.center)
-            .map(p => p.id);
-
-        let targetable = [];
-        for (let pid of ownedProvIds) {
-            let pd = G.provinceData[pid];
-            if (!pd || !pd.center) continue;
-            // Scan nearby provinces for enemies
-            let nearbyProvs = Object.values(G.provinceData).filter(p =>
-                p.country !== co && p.center &&
-                Math.hypot(p.center[0] - pd.center[0], p.center[1] - pd.center[1]) < 3 &&
-                isAtWarWith(co, p.country)
-            );
-            for (let np of nearbyProvs) {
-                if (targetable.some(t => t.id === np.id)) continue;
-                // Check if enemy has any troops in this province
-                let enemyPresent = G.divisions.some(d =>
-                    d.country !== co && d.strength > 0 &&
-                    isAtWarWith(co, d.country) &&
-                    d.province === np.id
-                );
-                // Also check if any of our units already heading there
-                let alreadyGoing = G.divisions.some(d =>
-                    d.country === co && d.state === 'moving' &&
-                    d.targetX !== null && np.center &&
-                    Math.hypot(d.targetX - np.center[0], d.targetY - np.center[1]) < 0.3
-                );
-                if (!enemyPresent && !alreadyGoing) {
-                    targetable.push({ id: np.id, dist: Math.hypot(np.center[0] - pd.center[0], np.center[1] - pd.center[1]) });
-                }
-            }
-        }
-
-        // Sort by distance (closest first)
-        targetable.sort((a, b) => a.dist - b.dist);
-
-        // Send units to occupy
-        let unitsUsed = 0;
-        for (let target of targetable) {
-            if (unitsUsed >= idleUnits.length) break;
-            let targetPd = G.provinceData[target.id];
-            if (!targetPd || !targetPd.center) continue;
-
-            // Send one unit per province
-            let unitIdx = idleUnits.findIndex(d =>
-                !d.moving && d.state !== 'moving' && !G.patrolTargets[d.id]
-            );
-            if (unitIdx < 0) break;
-
-            let unit = idleUnits[unitIdx];
-            unit.state = 'moving';
-            unit.targetX = targetPd.center[0];
-            unit.targetY = targetPd.center[1];
-            // Set patrol so unit will guard after arrival
-            G.patrolTargets[unit.id] = [target.id];
-
-            idleUnits.splice(unitIdx, 1);
-            unitsUsed++;
-        }
-    }
-}
+// updateAIOccupation() is now defined in ai_controller.js
 
 function isAtWarWith(countryA, countryB) {
     if (!countryA || !countryB) return false;
@@ -5304,6 +5178,8 @@ document.addEventListener("keydown",(e)=>{
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     // 城市管理面板：搜索框输入 / Escape 关闭
     if (typeof cityMgrKeydown === 'function' && cityMgrKeydown(e)) return;
+    // 市场面板：自定义数量输入
+    if (typeof marketKeydown === 'function' && marketKeydown(e)) return;
     if ((e.key==="r"||e.key==="R") && !G.gameOver) { location.reload(); }
     if (e.key==="Escape") { G.selectedDivisions=[]; selectedProvince=null; G.selectedProvince=null; G.selectedCity=null; G.selectedCities=[]; G.selectedNavyNodeOnMap=false; G.navyProductionMode=false; G.selectedNavyNode=null; G.activeTab=null; _showNavyGuide=false; _navyGuideScroll=0; G.garrisonMode=false; G.garrisonUnitIds=[]; G.selectedArmyGroupId=null; G._cmdModal=null; G._cmdModalScroll=0; G.railBuildMode=null; G.railBuildConfirm=null; }
     if ((e.key==="r"||e.key==="R") && G.gameOver) { resetGame(); }

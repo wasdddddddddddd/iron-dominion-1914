@@ -183,7 +183,7 @@
 <script src="js/data_cities.js?v=38" defer></script>
 <script src="js/data_country_index.js?v=38" defer></script>
 <script src="js/data_factories.js?v=38" defer></script>
-<script src="js/game_ui.js?v=40" defer></script>
+<script src="js/game_ui.js?v=41" defer></script>
 <script src="js/data_events.js?v=38" defer></script>
 <script src="js/game_state.js?v=38" defer></script>
 <script src="js/command/commanderData.js?v=38" defer></script>
@@ -199,13 +199,16 @@
 <script src="js/game_panels.js?v=40" defer></script>
 <script src="js/command/commanderUI.js?v=38" defer></script>
 <script src="js/tactical.js?v=38" defer></script>
-<script src="js/game_core.js?v=40" defer></script>
+<script src="js/game_core.js?v=41" defer></script>
+<script src="js/market.js?v=1" defer></script>
 <script src="js/gl_units.js?v=40" defer></script>
 <script src="js/ai/ai_pathfinding.js?v=40" defer></script>
 <script src="js/ai/ai_strategy.js?v=38" defer></script>
 <script src="js/ai/ai_tactics.js?v=38" defer></script>
-<script src="js/ai/ai_controller.js?v=38" defer></script>
-<script src="js/game_init.js?v=38" defer></script>
+<script src="js/ai/ai_frontline.js?v=1" defer></script>
+<script src="js/ai/ai_army_group.js?v=1" defer></script>
+<script src="js/ai/ai_controller.js?v=42" defer></script>
+<script src="js/game_init.js?v=39" defer></script>
 <script src="js/multiplayer.js?v=38" defer></script>
 <script src="src/data/resourceData.js?v=1" defer></script>
 <script src="src/economy/resourceProduction.js?v=1" defer></script>
@@ -320,6 +323,157 @@ window.onerror = function(msg, url, line) {
     if (el) { el.style.display = "block"; el.textContent = msg + " (line " + line + ")"; }
 };
 </script>
+
+<!-- === 背景音乐系统（修复：国家曲正确区分、文件加载错误处理） === -->
+<script>
+// 音乐播放队列
+const MUSIC_QUEUE = {
+    mainTracks: [
+        'music/Dawn of Silence.mp3',
+        'music/The Silent March.mp3'
+    ],
+    countryTracks: {
+        'austria': 'music/austria/Empty Ballroom Waltz.mp3',
+        'france': 'music/france/Forty Years Waiting.mp3',
+        'germany': 'music/germany/Hymn of Iron and Fire.mp3',
+        'italy': 'music/italy/Alpine Truce.mp3',
+        'russia': 'music/russia/Frozen Steppe Dirge.mp3',
+        'uk': 'music/uk/Britannia\u2018s Watch.mp3',
+    },
+    index: 0,
+    audio: null,
+    playerCountry: null,
+    _isPlaying: false,
+};
+
+// 国家代码 → 文件夹映射
+const COUNTRY_TO_MUSIC_FOLDER = {
+    'AUSTRIA_HUNGARY': 'austria',
+    'FRANCE': 'france',
+    'GERMANY': 'germany',
+    'ITALY': 'italy',
+    'RUSSIA': 'russia',
+    'UK': 'uk',
+};
+
+// 六大列强列表（用于后续循环播放，避免与config.js的GREAT_POWERS冲突）
+const MUSIC_POWERS = ['GERMANY', 'FRANCE', 'UK', 'RUSSIA', 'AUSTRIA_HUNGARY', 'ITALY'];
+
+// 获取玩家国家主题曲路径
+function getCountryMusicPath(countryCode) {
+    var folder = COUNTRY_TO_MUSIC_FOLDER[countryCode];
+    return folder ? MUSIC_QUEUE.countryTracks[folder] : null;
+}
+
+// 播放指定URL，返回是否成功
+function playMusicUrl(url) {
+    var audio = MUSIC_QUEUE.audio;
+    if (!audio || !url) return false;
+    console.log('BGM: playing', url, 'for country', MUSIC_QUEUE.playerCountry, 'index', MUSIC_QUEUE.index);
+    audio.src = url;
+    audio.currentTime = 0;
+    var promise = audio.play();
+    if (promise) {
+        promise.catch(function(e) {
+            console.log('BGM play failed:', url, e);
+        });
+    }
+    return true;
+}
+
+// 播放下一首
+function playNextMusic() {
+    var idx = MUSIC_QUEUE.index;
+    var nextUrl = null;
+    var nextIndex = MUSIC_QUEUE.index;
+
+    // 检查玩家是否已选择国家
+    if (MUSIC_QUEUE._countrySelected && MUSIC_QUEUE.playerCountry) {
+        var countryMusic = getCountryMusicPath(MUSIC_QUEUE.playerCountry);
+        console.log('BGM: playNextMusic idx=' + idx + ' playerCountry=' + MUSIC_QUEUE.playerCountry + ' countryMusic=' + countryMusic);
+    }
+
+    if (idx === 0) {
+        // 第1阶段：循环播放寂静的黎明（直到玩家选择国家）
+        if (MUSIC_QUEUE._countrySelected && MUSIC_QUEUE.playerCountry) {
+            var countryMusic = getCountryMusicPath(MUSIC_QUEUE.playerCountry);
+            if (countryMusic) {
+                // 玩家已选择国家，进入下一阶段→国家曲
+                nextUrl = countryMusic;
+                nextIndex = 2; // 下一步→无声的进军
+                console.log('BGM: transitioning to country music for', MUSIC_QUEUE.playerCountry, '->', countryMusic);
+            } else {
+                // 国家曲路径无效，直接跳到无声的进军
+                console.log('BGM: country music not found for', MUSIC_QUEUE.playerCountry, 'skipping to next');
+                nextUrl = MUSIC_QUEUE.mainTracks[1];
+                nextIndex = 3;
+            }
+        } else {
+            // 未选择国家，继续循环寂静的黎明
+            nextUrl = MUSIC_QUEUE.mainTracks[0];
+            nextIndex = 0; // 保持0，无限循环
+            console.log('BGM: looping Dawn of Silence (country not selected)');
+        }
+    } else if (idx === 2) {
+        // 第3首：无声的进军
+        nextUrl = MUSIC_QUEUE.mainTracks[1];
+        nextIndex = 3; // 下一步→循环各国
+        console.log('BGM: playing The Silent March');
+    } else {
+        // 第4首起：轮流循环非玩家国家的主题曲（不播错国家）
+        var available = MUSIC_POWERS.filter(function(c) {
+            return c !== MUSIC_QUEUE.playerCountry;
+        });
+        if (available.length === 0) available = MUSIC_POWERS;
+        var randomCountry = available[Math.floor(Math.random() * available.length)];
+        var countryMusic = getCountryMusicPath(randomCountry);
+        if (countryMusic) {
+            nextUrl = countryMusic;
+            console.log('BGM: random country music for', randomCountry, '->', countryMusic);
+        } else {
+            nextUrl = MUSIC_QUEUE.mainTracks[0];
+            console.log('BGM: fallback to main track (country music not found for', randomCountry + ')');
+        }
+        nextIndex = 3; // 保持在循环模式
+    }
+
+    MUSIC_QUEUE.index = nextIndex;
+    if (nextUrl) {
+        playMusicUrl(nextUrl);
+    } else {
+        console.log('BGM: no next URL, looping Dawn of Silence');
+        MUSIC_QUEUE.index = 0;
+        playMusicUrl(MUSIC_QUEUE.mainTracks[0]);
+    }
+}
+
+// 开始播放
+function startBGM() {
+    if (MUSIC_QUEUE.audio) return;
+    var audio = new Audio();
+    audio.volume = 0.4;
+    audio.loop = false;
+    audio.addEventListener('ended', function() {
+        console.log('BGM: track ended, advancing to next');
+        playNextMusic();
+    });
+    // 文件加载失败时也切换到下一首
+    audio.addEventListener('error', function() {
+        console.log('BGM: track load error, advancing to next');
+        setTimeout(playNextMusic, 1000);
+    });
+    MUSIC_QUEUE.audio = audio;
+    MUSIC_QUEUE.index = 0;
+    MUSIC_QUEUE._countrySelected = false;
+    // 尝试播放，被拦截是正常的，等用户交互
+    playMusicUrl(MUSIC_QUEUE.mainTracks[0]);
+}
+
+// 页面加载完成后自动尝试播放
+window.addEventListener('load', function() {
+    setTimeout(startBGM, 500);
+});</script>
+
 </body>
 </html>
 

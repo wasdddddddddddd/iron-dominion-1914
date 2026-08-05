@@ -1430,10 +1430,14 @@ function render() { window._sibBtns = []; window._sibFormBtn = []; window._sideP
 
     ctx.clearRect(0, 0, w, h);
 
-    // 每帧共享师团索引：渲染路径内避免多次 O(N) find（前线叠层/驻军高亮/侧栏共用）
-    let _dix = new Map();
-    for (let x of G.divisions) { _dix.set(x.id, x); _dix.set('' + x.id, x); }
-    G._divIndex = _dix;
+    // 师团索引：持久 Map + 长度校验兜底（单位增删/存档替换都会改变长度，仅在变化帧重建；
+    // removeDivision 另有显式 delete，保证删除即时生效）
+    let _dix = G._divIndex;
+    if (!_dix || G._divIndexLen !== G.divisions.length) {
+        _dix = G._divIndex = new Map();
+        for (let x of G.divisions) { _dix.set(x.id, x); _dix.set('' + x.id, x); }
+        G._divIndexLen = G.divisions.length;
+    }
 
     // ===== UI-only 模式（Unity 渲染地图/单位，本层只画面板与 HUD） =====
     if (window.UI_ONLY_MODE) {

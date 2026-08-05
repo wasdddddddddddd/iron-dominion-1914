@@ -129,11 +129,13 @@ function getAvailableCommanders(code, excludeId) {
 }
 
 // ==== 加成计算（纯数值层） ====
+// per-unit 缓存：组结构/总司变更会 _markGroupsDirty(+1 版本号)，缓存按版本惰性重建
 function getDivisionBonuses(div) {
-    let b = { atk: 0, hp: 0, spd: 0, logi: 0 };
-    if (!div || !div.country) return b;
     let cs = G.commanderState;
-    if (!cs) return b;
+    if (!div || !div.country || !cs) return { atk: 0, hp: 0, spd: 0, logi: 0 };
+    let ver = cs._grpVer || 0;
+    if (div._bonusVer === ver && div._bonus) return div._bonus;
+    let b = { atk: 0, hp: 0, spd: 0, logi: 0 };
     let group = getGroupOfDivision(div.id);
     if (group) {
         let cmdr = commanderDataOf(group.country, group.commanderId);
@@ -149,6 +151,7 @@ function getDivisionBonuses(div) {
     for (let ef of getAuraList(chief)) {
         if (b[ef.stat] !== undefined) b[ef.stat] += ef.value || 0;
     }
+    div._bonus = b; div._bonusVer = ver;
     return b;
 }
 
@@ -359,6 +362,8 @@ function setChief(code, cmdId) {
     }
     cs.chiefs[code] = cmdId;
     removeFromPool(code, cmdId);
+    // 总司变更影响全单位光环 → 使 getDivisionBonuses 的 per-unit 缓存失效
+    _markGroupsDirty(cs);
     let auraTxt = "无光环";
     if (d.aura) {
         let labelMap = { atk: '攻击', hp: '血量', spd: '移速', logi: '后勤' };

@@ -223,29 +223,29 @@ function createFactoryEntity(provinceId, country) {
 
 function initCountries() {
     const init = {
-        GERMANY: { treasury: 600, stability: 85, flag: 0 },
-        FRANCE: { treasury: 600, stability: 80, flag: 1 },
-        UK: { treasury: 600, stability: 90, flag: 2 },
-        BELGIUM: { treasury: 600, stability: 80, flag: 3 },
-        NETHERLANDS: { treasury: 600, stability: 85, flag: 4 },
-        LUXEMBOURG: { treasury: 600, stability: 90, flag: 5 },
-        SWITZERLAND: { treasury: 600, stability: 95, flag: 6 },
-        DENMARK: { treasury: 600, stability: 90, flag: 7 },
-        ITALY: { treasury: 600, stability: 75, flag: 8 },
-        AUSTRIA_HUNGARY: { treasury: 600, stability: 70, flag: 9 },
-        SPAIN: { treasury: 600, stability: 80, flag: 10 },
-        PORTUGAL: { treasury: 600, stability: 85, flag: 11 },
-        RUSSIA: { treasury: 600, stability: 60, flag: 12 },
-        TURKEY: { treasury: 600, stability: 55, flag: 13 },
-        SERBIA: { treasury: 600, stability: 70, flag: 14 },
-        MONTENEGRO: { treasury: 600, stability: 75, flag: 15 },
-        BULGARIA: { treasury: 600, stability: 65, flag: 16 },
-        ROMANIA: { treasury: 600, stability: 60, flag: 17 },
-        GREECE: { treasury: 600, stability: 70, flag: 18 },
-        ALBANIA: { treasury: 600, stability: 50, flag: 19 },
-        NORWAY: { treasury: 600, stability: 90, flag: 20 },
-        SWEDEN: { treasury: 600, stability: 85, flag: 21 },
-        FINLAND: { treasury: 600, stability: 80, flag: 22 },
+        GERMANY: { treasury: 8000, stability: 85, flag: 0 },
+        FRANCE: { treasury: 4000, stability: 80, flag: 1 },
+        UK: { treasury: 4000, stability: 90, flag: 2 },
+        BELGIUM: { treasury: 1000, stability: 80, flag: 3 },
+        NETHERLANDS: { treasury: 1000, stability: 85, flag: 4 },
+        LUXEMBOURG: { treasury: 1000, stability: 90, flag: 5 },
+        SWITZERLAND: { treasury: 1000, stability: 95, flag: 6 },
+        DENMARK: { treasury: 1000, stability: 90, flag: 7 },
+        ITALY: { treasury: 4000, stability: 75, flag: 8 },
+        AUSTRIA_HUNGARY: { treasury: 4000, stability: 70, flag: 9 },
+        SPAIN: { treasury: 4000, stability: 80, flag: 10 },
+        PORTUGAL: { treasury: 1000, stability: 85, flag: 11 },
+        RUSSIA: { treasury: 4000, stability: 60, flag: 12 },
+        TURKEY: { treasury: 4000, stability: 55, flag: 13 },
+        SERBIA: { treasury: 1000, stability: 70, flag: 14 },
+        MONTENEGRO: { treasury: 1000, stability: 75, flag: 15 },
+        BULGARIA: { treasury: 1000, stability: 65, flag: 16 },
+        ROMANIA: { treasury: 1000, stability: 60, flag: 17 },
+        GREECE: { treasury: 1000, stability: 70, flag: 18 },
+        ALBANIA: { treasury: 1000, stability: 50, flag: 19 },
+        NORWAY: { treasury: 1000, stability: 90, flag: 20 },
+        SWEDEN: { treasury: 1000, stability: 85, flag: 21 },
+        FINLAND: { treasury: 1000, stability: 80, flag: 22 },
     };
     for (let [c, d] of Object.entries(init)) {
         let pop = (POPULATION[c] || 1) * 1000; // convert to thousands
@@ -499,6 +499,8 @@ function removeDivision(d) {
     if (cData) cData.divCount = Math.max(0, (cData.divCount || 0) - 1);
     let idx = G.divisions.indexOf(d);
     if (idx>=0) G.divisions.splice(idx,1);
+    // 同步持久师团索引（render 的 length 校验兜底，这里显式删除保证同帧即失效）
+    if (G._divIndex) { G._divIndex.delete(d.id); G._divIndex.delete('' + d.id); }
     if (G.selectedDivisions.includes(d.id)) G.selectedDivisions = G.selectedDivisions.filter(x=>x!==d.id);
     // 师团战死后自动从集团军移除（不足2个师自动解散）
     if (d.armyGroupId && typeof cleanupDivisionGroup === 'function') cleanupDivisionGroup(d.id);

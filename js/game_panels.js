@@ -103,7 +103,7 @@ const COUNTRY_IMG_FOLDER = {
     'AUSTRIA_HUNGARY': 'austria', 'ITALY': 'italy', 'RUSSIA': 'russia'
 };
 // 国家专属贴图类型（所有陆军兵种+海军+空军；潜艇不区分国家）
-const COUNTRY_SPECIFIC_TYPES = ['infantry', 'cavalry', 'navy', 'airplane', 'artillery', 'engineer', 'mountain'];
+const COUNTRY_SPECIFIC_TYPES = ['infantry', 'cavalry', 'navy', 'airplane', 'artillery', 'engineer', 'mountain', 'tank', 'flamethrower'];
 
 function preloadUnitImages() {
     // 通用单位贴图（工兵/炮兵/潜艇/山地师所有国家共用，步兵/骑兵/海军/空军非列强国家使用）
@@ -111,12 +111,15 @@ function preloadUnitImages() {
     for (let [type, cfg] of Object.entries(UNIT_TYPES)) {
         if (cfg.img) _loadAndProcess(cfg.img, UNIT_IMAGES, type, type !== 'navy' && type !== 'airplane');
     }
-    // 加载六大列强国家专属贴图（步兵、骑兵像素化，海军、空军不像素化）
+    // 加载六大列强国家专属贴图（步兵、骑兵像素化，海军/空军/坦克/喷火器不像素化）
     for (let [country, folder] of Object.entries(COUNTRY_IMG_FOLDER)) {
         for (let type of COUNTRY_SPECIFIC_TYPES) {
-            _loadAndProcess('images/units/' + folder + '/' + type + '.png', UNIT_IMAGES, country + '_' + type, type !== 'navy' && type !== 'airplane');
+            _loadAndProcess('images/units/' + folder + '/' + type + '.png', UNIT_IMAGES, country + '_' + type, type !== 'navy' && type !== 'airplane' && type !== 'tank' && type !== 'flamethrower');
         }
     }
+    // 通用坦克和喷火器贴图
+    _loadAndProcess('images/units/generic/tank.png', UNIT_IMAGES, 'tank', false);
+    _loadAndProcess('images/units/generic/flamethrower.png', UNIT_IMAGES, 'flamethrower', false);
     // 建筑物图片（不像素化）
     _loadAndProcess('images/buildings/capital.png', BUILDING_IMAGES, 'capital');
     _loadAndProcess('images/buildings/major.png', BUILDING_IMAGES, 'major');
@@ -456,8 +459,13 @@ const DUST_SIN_T = (() => { const a = new Float32Array(1024); for (let i = 0; i 
 function drawDivisions() {
     // 城市视图模式：不渲染单位
     if (G.cityViewMode) return;
-    let _divByIdMap = new Map();
-    for (let _x of G.divisions) _divByIdMap.set(_x.id, _x);
+    // 共享每帧师团索引（render 维护，按单位数变化重建），避免每帧新 Map + 400 次 set
+    let _divByIdMap = G._divIndex;
+    if (!_divByIdMap || G._divIndexLen !== G.divisions.length) {
+        _divByIdMap = new Map();
+        for (let _x of G.divisions) { _divByIdMap.set(_x.id, _x); _divByIdMap.set('' + _x.id, _x); }
+        G._divIndex = _divByIdMap; G._divIndexLen = G.divisions.length;
+    }
     // 1) Projectiles
     // 预渲染辉光精灵缓存：避免每发炮弹 shadowBlur 软件渲染（每帧数十发×2次fill）
     const _PROJ_SPRITES = {};
@@ -2001,6 +2009,7 @@ function drawMultiCityPanel() {
 }
 
 // ===== 省份信息面板（增强版） =====
+let _gameInfoCache = null; // { pid, at, divs, moving } — 选中省不变时 500ms 复用，避免每帧两次 O(N) filter
 function drawGameInfo() {
     if (!selectedProvince) return;
     let p = selectedProvince;
@@ -2008,8 +2017,15 @@ function drawGameInfo() {
     if (!pd) return;
     let co = G.provinceOwners[p.id];
     let cData = G.countries[co];
-    let divs = getDivisionsInProvince(p.id);
-    let moving = getMovingDivisionsTo(p.id);
+    let _now = performance.now();
+    let divs, moving;
+    if (_gameInfoCache && _gameInfoCache.pid === p.id && _now - _gameInfoCache.at < 500) {
+        divs = _gameInfoCache.divs; moving = _gameInfoCache.moving;
+    } else {
+        divs = getDivisionsInProvince(p.id);
+        moving = getMovingDivisionsTo(p.id);
+        _gameInfoCache = { pid: p.id, at: _now, divs: divs, moving: moving };
+    }
     let panelX = canvas.width - 270;
     let panelY = TOP_BAR_HEIGHT + 10;
     let panelW = 250, panelH = 180;
@@ -3893,7 +3909,7 @@ function drawLeftSidebar() {
     let tabStartY = TOP_BAR_HEIGHT + 4;
     let availableH = canvas.height - TOP_BAR_HEIGHT - BOTTOM_BAR_HEIGHT - 8;
     let tabGap = 6;
-    let totalTabH = LEFT_TAB_H * 3 + tabGap * 2;
+    let totalTabH = LEFT_TAB_H * 4 + tabGap * 3;
     let tabY = tabStartY + (availableH - totalTabH) / 2;
 
     ctx.save();
@@ -3919,6 +3935,12 @@ function drawLeftSidebar() {
     let cityActive = G.leftPanel === 'cities';
     drawLeftTab(tabX, tabY, LEFT_TAB_W, LEFT_TAB_H, "🏙", "城市", cityActive);
     G._leftSidebarTabs.push({ x: tabX, y: tabY, w: LEFT_TAB_W, h: LEFT_TAB_H, panel: 'cities' });
+    tabY += LEFT_TAB_H + tabGap;
+
+    // 市场标签
+    let marketActive = G.leftPanel === 'market';
+    drawLeftTab(tabX, tabY, LEFT_TAB_W, LEFT_TAB_H, "📊", "市场", marketActive);
+    G._leftSidebarTabs.push({ x: tabX, y: tabY, w: LEFT_TAB_W, h: LEFT_TAB_H, panel: 'market' });
 
     ctx.restore();
 
@@ -3984,6 +4006,8 @@ function drawLeftPanelContent() {
         drawLeftNavyPanel2(px + 8, py + 5, pw - 16, ph - 10);
     } else if (G.leftPanel === 'cities') {
         // 城市管理面板自绘全权覆盖（由 drawCityManager 在渲染末尾绘制）
+    } else if (G.leftPanel === 'market') {
+        if (typeof drawMarketPanel === 'function') drawMarketPanel(px + 8, py + 5, pw - 16, ph - 10);
     }
     ctx.restore();
 }
@@ -4012,6 +4036,7 @@ function handleLeftPanelClick(mx, my) {
                 // 切换面板时重置滚动位置
                 if (G.leftPanel === 'navy') _navyPanelScroll = 0;
                 if (G.leftPanel === 'economy') _econScroll = 0;
+                if (G.leftPanel === 'market') G.market.scroll = 0;
                 if (G.leftPanel === 'cities' && G.cityMgrState) {
                     G.cityMgrState.scroll = 0;
                     G.cityMgrState.confirm = null;
@@ -4033,6 +4058,10 @@ function handleLeftPanelClick(mx, my) {
     // 城市管理面板按钮
     if (G.leftPanel === 'cities') {
         if (typeof cityMgrClick === 'function' && cityMgrClick(mx, my)) return true;
+    }
+    // 市场面板按钮
+    if (G.leftPanel === 'market') {
+        if (typeof handleMarketClick === 'function' && handleMarketClick(mx, my)) return true;
     }
     // 海军面板按钮
     if (G.leftPanel === 'navy' && G._leftPanelRect) {
@@ -4057,6 +4086,11 @@ function handleLeftPanelClick(mx, my) {
     if (G.leftPanel && G._leftPanelRect) {
         let r = G._leftPanelRect;
         if (mx > r.x && mx < r.x + r.w && my > r.y && my < r.y + r.h) {
+            return true;
+        }
+        // 市场面板：点击面板外区域关闭（需求：再点按钮或点击面板外关闭）
+        if (G.leftPanel === 'market') {
+            G.leftPanel = null;
             return true;
         }
     }
