@@ -388,6 +388,37 @@ function marketAICap(country, type) {
     return cap;
 }
 
+// 各国根据自身经济状况评估贸易税率（每 ~5 天调整一次，平滑 ±1）
+// 评估依据：
+//   · 国库相对「年支出」的充足度（<1 年 → 财政紧张，加税；>3 年 → 宽裕，减税）
+//   · 财政年度差额（income−expenses > 0 顺差 → 可低税；<0 赤字 → 加税）
+//   · 出口依存度：库存长期处于可出口区间的国家，税率直接影响其贸易收入
+// 结果写入 m.aiTax[co]（玩家对某国的覆盖 m.overrides[co] 优先于该国自评税率）
+function marketReviewTax(country) {
+    let m = marketState();
+    let cd = G.countries && G.countries[country];
+    if (!cd || cd.treasury === undefined) return null;
+    let expenses = (cd.expenses || 0);
+    let income = (cd.income || 0);
+    let deficit = expenses - income;                       // >0 年度财政赤字
+    let safeExpenses = Math.max(1, expenses * 12);          // 维持一年开销所需的现金
+    let ratio = (cd.treasury || 0) / safeExpenses;          // <1 → 储备不足一年
+    // 期望税率：赤字越严重、储备越不足 → 越高
+    let target = MARKET_BASE_TAX;
+    if (deficit > 0) target += Math.round(Math.min(15, deficit * 4));   // 赤字每 1 单位加税 4 点
+    if (ratio < 1) target = Math.max(target, MARKET_BASE_TAX + Math.round((1 - ratio) * 10));
+    if (ratio > 3) target = Math.min(target, MARKET_BASE_TAX - 5);      // 超富 → 低税刺激贸易
+    target = Math.max(MARKET_TAX_MIN, Math.min(MARKET_TAX_MAX, target));
+    // 平滑调整（每次 ±1，避免税率跳变）
+    let cur = m.aiTax[country] !== undefined ? m.aiTax[country] : MARKET_BASE_TAX;
+    let prev = m.aiTax[country] !== undefined ? m.aiTax[country] : MARKET_BASE_TAX;
+    let nxt = cur;
+    if (cur < target) nxt = Math.min(target, cur + 1);
+    else if (cur > target) nxt = Math.max(target, cur - 1);
+    m.aiTax[country] = nxt;
+    return { prev: prev, next: nxt, target: target, ratio: Math.round(ratio * 10) / 10, deficit: Math.round(deficit * 10) / 10 };
+}
+
 function marketAI() {
     let m = marketState();
     if (!m._initDone || !G.countries) return;
@@ -400,6 +431,8 @@ function marketAI() {
         // 无贸易通道（无港口亦无铁路连接）的国家不参与国际贸易
         let channel = marketNationalStock(co);
         if (channel.connectedCount <= 0) continue;
+        // 先经济评估税率，再按产出/缺口做进出口
+        let review = marketReviewTax(co);
         for (let type of ['grain', 'iron']) {
             let stock = channel[type];
             let cap = marketAICap(co, type);

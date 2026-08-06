@@ -443,6 +443,18 @@ function unitSprite(div, imgSize, flip) {
     } else {
         cc.drawImage(img, W / 2 - s / 2, imgY - s / 2, s, s);
     }
+    // 非列强国家：在通用贴图 sprite 右上角画国旗
+    cc.setTransform(1, 0, 0, 1, 0, 0); // 恢复变换矩阵
+    if (!countryImg) {
+        let flagKey = FLAG_COUNTRY_MAP[div.country];
+        if (flagKey && FLAG_IMAGES[flagKey] && FLAG_IMAGES[flagKey].complete && FLAG_IMAGES[flagKey].naturalWidth > 0) {
+            let flagW = Math.max(6, Math.round(s * 0.2));
+            let flagH = Math.max(4, Math.round(s * 0.14));
+            let flagX = W - flagW - 2;
+            let flagY = 2;
+            cc.drawImage(FLAG_IMAGES[flagKey], flagX, flagY, flagW, flagH);
+        }
+    }
     UNIT_SPRITE_CACHE[key] = c;
     // 容量上限：超过 1000 张时整体清空（拖拽缩放时 imgSize 档位变化会积累缓存）
     if (UNIT_SPRITE_CACHE.__n === undefined) UNIT_SPRITE_CACHE.__n = 0;
@@ -656,6 +668,7 @@ function drawDivisions() {
                 }
             }
         }
+        let imgY = div.type === 'airplane' ? sy - imgSize * 0.35 : sy;
         if (!usingSprite && !glDrawn) {
             // 潜艇（动态 alpha）或贴图未加载：原绘制路径
             if (div.type === 'submarine') {
@@ -670,7 +683,6 @@ function drawDivisions() {
                 }
                 if (div.type !== 'navy') ctx.imageSmoothingEnabled = false;
                 const shouldFlip = false; // 取消单位镜像翻转
-                let imgY = div.type === 'airplane' ? sy - imgSize * 0.35 : sy;
                 ctx.drawImage(img, sx - imgSize/2, imgY - imgSize/2, imgSize, imgSize);
                 if (div.type !== 'navy') ctx.imageSmoothingEnabled = true;
             } else {
@@ -679,6 +691,17 @@ function drawDivisions() {
                 ctx.textAlign = "center"; ctx.textBaseline = "middle";
                 ctx.fillStyle = "#fff";
                 ctx.fillText(ut.sym, sx, sy-1);
+            }
+        }
+        // 非列强国家补充国旗绘制（WebGL路径 + 后备emoji路径；sprite路径已在缓存中画了国旗）
+        if (!usingSprite && !countryImg) {
+            let flagKey = FLAG_COUNTRY_MAP[div.country];
+            if (flagKey && FLAG_IMAGES[flagKey] && FLAG_IMAGES[flagKey].complete && FLAG_IMAGES[flagKey].naturalWidth > 0) {
+                let flagW = Math.max(8, Math.round(imgSize * 0.22));
+                let flagH = Math.max(5, Math.round(imgSize * 0.16));
+                let flagX = sx + imgSize/2 - flagW - 2;
+                let flagY = imgY - imgSize/2 + 2;
+                ctx.drawImage(FLAG_IMAGES[flagKey], flagX, flagY, flagW, flagH);
             }
         }
         // 下潜状态提示（水波纹）
@@ -1037,6 +1060,7 @@ function drawDivisions() {
 // ===== 顶层状态栏（游戏版） =====
 function drawGameTopBar() {
     let h = TOP_BAR_HEIGHT;
+    G._devTopDivBtn = null;
     ctx.save();
 
     // 渐变背景（深色羊皮纸质感）
@@ -1098,11 +1122,14 @@ function drawGameTopBar() {
         CT.drawSeparator(ctx, lx, cy, 16);
         lx += 8;
 
-        // ⚔️ 师团
+        // ⚔️ 师团（开发者模式：可点击选中该国全部军队）
         let army = ge.divCount || 0;
+        let armyText = "⚔️" + army + "师";
+        let armyW = ctx.measureText(armyText).width;
         ctx.fillStyle = "#d4a44a";
-        ctx.fillText("⚔️" + army + "师", lx, cy);
-        lx += ctx.measureText("⚔️" + army + "师").width + 8;
+        ctx.fillText(armyText, lx, cy);
+        G._devTopDivBtn = { x: lx - 2, y: 0, w: armyW + 4, h: h };
+        lx += armyW + 8;
 
         // 分隔符
         CT.drawSeparator(ctx, lx, cy, 16);
@@ -2632,6 +2659,20 @@ function drawCountrySidebar() {
             window._sibBtns.push({ id:b.id, x:x+8, y:sy, w:w-16, h:bh, tooltip:b.tip });
             sy += bh + 4;
         }
+    }
+
+    // ===== 开发者模式：切换到任意国家 =====
+    if (G.devMode && co !== G.playerCountry) {
+        sy += 4;
+        let bh2 = 26;
+        let hovered2 = mouseY !== undefined && mouseY > sy && mouseY < sy + bh2 && mouseX > x + 8 && mouseX < x + w - 8;
+        CT.drawRoundedBtn(ctx, x + 8, sy, w - 16, bh2, "🎮 切换到" + (COUNTRY_CN[co] || co), {
+            hovered: hovered2,
+            style: "info",
+            font: "11px Georgia,serif"
+        });
+        if (!window._sibBtns) window._sibBtns = [];
+        window._sibBtns.push({ id: "dev_switch", co: co, x: x + 8, y: sy, w: w - 16, h: bh2, tooltip: "开发者模式：切换玩家控制到" + (COUNTRY_CN[co] || co) });
     }
     ctx.restore();
 }

@@ -1163,31 +1163,48 @@ outer: for (let d of G.divisions) {
             }
         }
     }
-    // 建筑碰撞分离：只对城市生效，碰撞箱=选中圈大小
+    // 建筑碰撞分离（性能优化：空间桶替代 O(C×N)）
     {
         let bEffZoom = Math.max(zoom, typeof TACTICAL_ZOOM !== 'undefined' ? TACTICAL_ZOOM : 1.8);
         let PPD = typeof PIXELS_PER_DEGREE !== 'undefined' ? PIXELS_PER_DEGREE : 100;
-
+        
+        // 构建单位空间桶（0.5°网格）
+        let uBuckets = Object.create(null);
+        let uCell = 0.5;
+        for (let d of G.divisions) {
+            if (d.rx === undefined) continue;
+            let k = Math.floor(d.rx / uCell) + ',' + Math.floor(d.ry / uCell);
+            if (!uBuckets[k]) uBuckets[k] = [];
+            uBuckets[k].push(d);
+        }
+        
         for (let city of CITIES) {
             let cityData = G.cities[city.id];
             if (!cityData || cityData.hp <= 0) continue;
             if (!city.isCapital && zoom <= 0.35) continue;
             if (!city.isCapital && !(_MAJOR_CITIES.has(city.id) || (typeof isMajorCity === 'function' && isMajorCity(city.id))) && zoom <= 0.7) continue;
             let isMajor = _MAJOR_CITIES.has(city.id) || (typeof isMajorCity === 'function' && isMajorCity(city.id));
-            // 选中圈=碰撞箱=点击圈：首都 2.5*effZoom，大城市 4.5*effZoom，小城市 2.5*effZoom
             let selR = city.isCapital ? 2.5 * bEffZoom : (isMajor ? 4.5 * bEffZoom : 2.5 * bEffZoom);
             let bR = selR / (zoom * PPD);
-
-            for (let d of G.divisions) {
-                if (d.rx === undefined) continue;
-                let sdx = d.rx - city.lon;
-                let sdy = d.ry - city.lat;
-                let dist = Math.hypot(sdx, sdy);
-                let minDist = bR;
-                if (dist < minDist && dist > 0.001) {
-                    let push = (minDist - dist) / minDist * 0.03;
-                    let nx = sdx / dist, ny = sdy / dist;
-                    d.rx += nx * push; d.ry += ny * push;
+            if (bR > 2) bR = 2; // 最多2度碰撞半径
+            
+            // 只检查城市周围2°内的单位（空间桶加速）
+            let cx = Math.floor(city.lon / uCell), cy = Math.floor(city.lat / uCell);
+            for (let dx = -4; dx <= 4; dx++) {
+                for (let dy = -4; dy <= 4; dy++) {
+                    let bk = (cx + dx) + ',' + (cy + dy);
+                    let bucket = uBuckets[bk];
+                    if (!bucket) continue;
+                    for (let d of bucket) {
+                        let sdx = d.rx - city.lon;
+                        let sdy = d.ry - city.lat;
+                        let dist = Math.hypot(sdx, sdy);
+                        if (dist < bR && dist > 0.001) {
+                            let push = (bR - dist) / bR * 0.03;
+                            let nx = sdx / dist, ny = sdy / dist;
+                            d.rx += nx * push; d.ry += ny * push;
+                        }
+                    }
                 }
             }
         }
@@ -1276,20 +1293,16 @@ outer: for (let d of G.divisions) {
 
 function fireUnits(days) {
     // id → division 索引（复用 render 维护的持久索引，length 变化时回退重建）
-    let divById = null;
-    function _divOf(id) {
-        if (!divById) {
-            divById = G._divIndex;
-            if (!divById || G._divIndexLen !== G.divisions.length) {
-                divById = new Map();
-                for (let x of G.divisions) divById.set(x.id, x);
-            }
-        }
-        return divById.get(id);
+    let divById = G._divIndex;
+    if (!divById || G._divIndexLen !== G.divisions.length) {
+        divById = new Map();
+        for (let x of G.divisions) divById.set(x.id, x);
+        G._divIndex = divById; G._divIndexLen = G.divisions.length;
     }
-    // Spatial index: group divisions by 0.5° grid cells for fast neighbor lookup
+    function _divOf(id) { return divById ? divById.get(id) : null; }
+    
+    // Spatial index: group divisions by 0.5° grid cells
     let CELL = 0.5;
-    // 整数桶 key（世界范围 rx≤12°, ry≤6° → kx,ky∈[0,24]，偏移 100 后唯一）
     const _bk = (kx, ky) => (kx + 100) * 1000 + (ky + 100);
     let buckets = Object.create(null);
     for (let e of G.divisions) {
@@ -1297,33 +1310,49 @@ function fireUnits(days) {
         let key = _bk(Math.floor(e.rx / CELL), Math.floor(e.ry / CELL));
         (buckets[key] || (buckets[key] = [])).push(e);
     }
-    // 建筑网格索引（城市/工厂/海军节点三分桶，元素直接存对象，避免每帧 {bt,btype} 分配）
-    let cityBuckets = Object.create(null);
-    if (G.cities) {
-        for (let cid in G.cities) {
-            let c = G.cities[cid];
-            if (!c || c.hp <= 0) continue;
-            let key = _bk(Math.floor(c.lon / CELL), Math.floor(c.lat / CELL));
-            (cityBuckets[key] || (cityBuckets[key] = [])).push(c);
+    G._lastDivBuckets = buckets; // 缓存供 updateProjectiles 复用
+    // 建筑索引缓存（城市不移动，永久缓存）
+    if (!G._cityBuckets) {
+        let cb = Object.create(null);
+        if (G.cities) {
+            for (let cid in G.cities) {
+                let c = G.cities[cid];
+                if (!c || c.hp <= 0) continue;
+                let key = _bk(Math.floor(c.lon / CELL), Math.floor(c.lat / CELL));
+                (cb[key] || (cb[key] = [])).push(c);
+            }
         }
+        G._cityBuckets = cb;
     }
-    let factBuckets = Object.create(null);
-    if (G.factories) {
-        for (let f of G.factories) {
-            if (!f || f.hp <= 0) continue;
-            let key = _bk(Math.floor(f.rx / CELL), Math.floor(f.ry / CELL));
-            (factBuckets[key] || (factBuckets[key] = [])).push(f);
+    let cityBuckets = G._cityBuckets;
+    // 工厂/海军节点缓存（极少变化，仅在数量变化时重建）
+    if (!G._factBuckets || (G.factories && G.factories.length !== G._factCount)) {
+        let fb = Object.create(null);
+        if (G.factories) {
+            for (let f of G.factories) {
+                if (!f || f.hp <= 0) continue;
+                let key = _bk(Math.floor(f.rx / CELL), Math.floor(f.ry / CELL));
+                (fb[key] || (fb[key] = [])).push(f);
+            }
         }
+        G._factBuckets = fb;
+        G._factCount = G.factories ? G.factories.length : 0;
     }
-    let nodeBuckets = Object.create(null);
-    if (G.navyNodes) {
-        for (let nid in G.navyNodes) {
-            let n = G.navyNodes[nid];
-            if (!n || n.hp <= 0) continue;
-            let key = _bk(Math.floor(n.lon / CELL), Math.floor(n.lat / CELL));
-            (nodeBuckets[key] || (nodeBuckets[key] = [])).push(n);
+    if (!G._nodeBuckets || !G.navyNodes || Object.keys(G.navyNodes).length !== G._nodeCount) {
+        let nb = Object.create(null);
+        if (G.navyNodes) {
+            for (let nid in G.navyNodes) {
+                let n = G.navyNodes[nid];
+                if (!n || n.hp <= 0) continue;
+                let key = _bk(Math.floor(n.lon / CELL), Math.floor(n.lat / CELL));
+                (nb[key] || (nb[key] = [])).push(n);
+            }
         }
+        G._nodeBuckets = nb;
+        G._nodeCount = G.navyNodes ? Object.keys(G.navyNodes).length : 0;
     }
+    let factBuckets = G._factBuckets;
+    let nodeBuckets = G._nodeBuckets;
 
     for (let d of G.divisions) {
         let ut=UNIT_TYPES[d.type];
@@ -1769,6 +1798,24 @@ function fireUnits(days) {
             torpedo: isSub,
         });
         if (G.projectiles.length > 50) G.projectiles.shift();
+
+        // AI 躲避火炮：目标单位被敌方炮兵锁定开火时，概率性侧移
+        // （仅 AI 单位、非火炮自身、非海军；炮兵炮弹慢、有弧形，侧移有效）
+        if (isArtillery && fireTarget && fireTarget.strength > 0 &&
+            fireTarget.country !== G.playerCountry &&
+            fireTarget.type !== 'artillery' &&
+            fireTarget.type !== 'navy' && fireTarget.type !== 'submarine') {
+            let dodgeChance = 0.35; // 35% 概率侧移
+            if (fireTarget._aiTask === 'ATTACK' || fireTarget._aiTask === 'DEFEND_CITY') dodgeChance = 0.5;
+            if (Math.random() < dodgeChance && fireTarget.state !== 'moving') {
+                // 垂直方向偏移 0.1°（炮弹需要时间飞行，侧移可躲）
+                let a2 = Math.atan2(dy, dx) + (Math.PI / 2) * (Math.random() < 0.5 ? 1 : -1);
+                let dodgeDist = 0.08 + Math.random() * 0.07;
+                fireTarget.rx += Math.cos(a2) * dodgeDist;
+                fireTarget.ry += Math.sin(a2) * dodgeDist;
+                fireTarget._lastDodgeTick = G.tick || 0;
+            }
+        }
     }
 
     // City attacks
@@ -1864,25 +1911,22 @@ function cmdDamageReduced(d, amt) {
 }
 
 function updateProjectiles(days) {
-    // 没有投射物直接返回，不建空间索引
     if (!G.projectiles || G.projectiles.length === 0) return;
 
-    // Spatial index: 0.5° grid for fast O(1) neighbor lookup (only when needed)
-    const CELL = 0.5;
-    // 整数桶 key（世界范围 rx≤12°, ry≤6° → kx,ky∈[0,24]，偏移 100 后唯一）
-    const _bk = (kx, ky) => (kx + 100) * 1000 + (ky + 100);
-    const buckets = Object.create(null);
-    // 复用 render 维护的持久师团索引（length 变化时回退重建）
+    // 单位索引（追踪弹需要按 id 查目标单位）
     let _divById2 = G._divIndex;
     if (!_divById2 || G._divIndexLen !== G.divisions.length) {
         _divById2 = new Map();
         for (const e of G.divisions) { _divById2.set(e.id, e); _divById2.set('' + e.id, e); }
+        G._divIndex = _divById2; G._divIndexLen = G.divisions.length;
     }
-    for (const e of G.divisions) {
-        if (e.strength <= 0) continue;
-        const key = _bk(Math.floor(e.rx / CELL), Math.floor(e.ry / CELL));
-        (buckets[key] || (buckets[key] = [])).push(e);
-    }
+
+    // 复用 fireUnits 构建好的单位桶（同一帧内单位位置不变）
+    const CELL = 0.5;
+    const _bk = (kx, ky) => (kx + 100) * 1000 + (ky + 100);
+    const buckets = G._lastDivBuckets;
+    if (!buckets) return; // fireUnits 还没运行过，跳过
+    
     function _nearDivs(cx, cy, range) {
         const result = [];
         const minKx = Math.floor((cx - range) / CELL);
@@ -2121,11 +2165,14 @@ function updateNeutralCityCapture(days) {
         let isMaj = typeof isMajorCity === 'function' && isMajorCity(city.id);
         let capRange = (isCap || isMaj) ? 0.30 : 0.24;
         if (!divBuckets) {
-            divBuckets = Object.create(null);
-            for (let d of G.divisions) {
-                if (d.strength <= 0 || d.rx === undefined) continue;
-                let k = (Math.floor(d.rx / 0.5) + 100) * 1000 + (Math.floor(d.ry / 0.5) + 100);
-                (divBuckets[k] || (divBuckets[k] = [])).push(d);
+            divBuckets = G._lastDivBuckets; // 复用 fireUnits 已建桶
+            if (!divBuckets) {
+                divBuckets = Object.create(null);
+                for (let d of G.divisions) {
+                    if (d.strength <= 0 || d.rx === undefined) continue;
+                    let k = (Math.floor(d.rx / 0.5) + 100) * 1000 + (Math.floor(d.ry / 0.5) + 100);
+                    (divBuckets[k] || (divBuckets[k] = [])).push(d);
+                }
             }
         }
         let bx = Math.floor(city.lon / 0.5), by = Math.floor(city.lat / 0.5);
@@ -2316,6 +2363,12 @@ function processBuildQueue(dtMs) {
                 if (d) {
                     d.rx = (q[i].cityLon || pd.center[0]) + (Math.random() - 0.5) * 0.05;
                     d.ry = (q[i].cityLat || pd.center[1]) + (Math.random() - 0.5) * 0.05;
+                    // 战区标记：德国东部（东普鲁士/波美拉尼亚/西里西亚，经度>16）生产的单位
+                    // 划为"东线"（面向俄国），写死其进攻方向为俄国（史丽芬计划：东守西攻不成立时，
+                    // 东线单位专门负责压制俄国，避免所有新兵都涌向西线法国）。
+                    if (itemCountry === 'GERMANY') {
+                        d._theater = (d.rx > 16.0) ? 'EAST' : 'WEST';
+                    }
                 }
             } else if (q[i].type === 'upgrade_city') {
                 // 城市升级完成
@@ -2545,16 +2598,17 @@ function updateEconomy(days) {
     for (let[c,data] of Object.entries(G.countries)) {
         
         let inc=calcCountryIncome(c);
-        // 师团维护费 1.5金/天；指挥系统后勤加成可减免（后勤+20% → 维护费-20%）
+        // 军队维护费：开发者模式可调（_devMaintOverride），默认 1.5 金/师团/天；0 = 关闭
+        let _maintCost = (window._devMaintOverride !== undefined && window._devMaintOverride !== null) ? window._devMaintOverride : 1.5;
         let exp = 0;
-        if (G.divisions) {
+        if (_maintCost > 0 && G.divisions) {
             for (let dd of G.divisions) {
                 if (dd.country !== c) continue;
                 let _lb = (typeof getDivisionLogiBonus === 'function') ? getDivisionLogiBonus(dd) : 0;
-                exp += 1.5 * (1 - _lb);
+                exp += _maintCost * (1 - _lb);
             }
         }
-        // 占领敌方城市减维护费：每占领1个敌方城市，减1金币/天
+        // 占领敌方城市增维护费：每占领1个敌方城市，加1金币/天
         let occupiedCities = 0;
         for (let cid in G.cities) {
             let ct = G.cities[cid];
@@ -2562,7 +2616,6 @@ function updateEconomy(days) {
                 occupiedCities++;
             }
         }
-        // 占领敌方城市增维护费：每占领1个敌方城市，加1金币/天
         exp += occupiedCities;
         data.income=Math.round(inc*10)/10;
         data.expenses=Math.round(exp*10)/10;
@@ -3356,6 +3409,17 @@ function checkEvents() {
         let key=ev.y+'-'+ev.m+'-'+ev.d;
         if (triggeredEvents.has(key)) continue;
         if (y===ev.y&&m===ev.m&&d===ev.d) {
+            // 意大利选择阵营：AI 意大利必定加入同盟国（不暂停、不弹选择，直接执行）
+            if (ev.t === '意大利选择阵营' && G.playerCountry !== 'ITALY') {
+                triggeredEvents.add(key);
+                declareWar('ITALY', 'FRANCE');
+                declareWar('ITALY', 'UK');
+                addGameLog("意大利加入同盟国！");
+                G.newsBanner = "🇮🇹 意大利加入同盟国！";
+                G.newsTimer = 300;
+                if (typeof eventHistory !== 'undefined') eventHistory.push({ name: ev.t || ev.title, choice: '加入同盟国', date: new Date(G.date) });
+                continue;
+            }
             G.activeEvent=ev;
             triggeredEvents.add(key);
             G.paused=true;
@@ -3929,6 +3993,23 @@ function handleUIClick(mx,my) {
                     addGameLog("退出阵营");
                     return true;
                 }
+                // 开发者模式：切换到任意国家
+                if (b.id === "dev_switch" && G.devMode && b.co) {
+                    let prev = G.playerCountry;
+                    G.playerCountry = b.co;
+                    G.selectedDivision = null;
+                    G.selectedDivisions = [];
+                    G.selectedCity = null;
+                    G.selectedProvince = null;
+                    selectedProvince = null;
+                    G.diplomacyFocus = null;
+                    // 同步人类国家列表，使 AI 接管旧国
+                    if (G.multiplayerHumanCountries && !G.multiplayerHumanCountries.includes(b.co)) {
+                        G.multiplayerHumanCountries = [b.co];
+                    }
+                    addGameLog("🎮 开发者模式：已切换到 " + (COUNTRY_CN[b.co] || b.co) + "（原 " + (COUNTRY_CN[prev] || prev) + " 交由 AI 控制）");
+                    return true;
+                }
             }
         }
     }
@@ -3953,6 +4034,19 @@ function handleUIClick(mx,my) {
     }
 
     if (my<TOP_BAR_HEIGHT) {
+        // 开发者模式：点击顶栏师团数 → 选中本国全部军队
+        if (G.devMode && G._devTopDivBtn && mx > G._devTopDivBtn.x && mx < G._devTopDivBtn.x + G._devTopDivBtn.w) {
+            let divs = G.divisions.filter(d => d.country === G.playerCountry && !d.dead);
+            if (divs.length > 0) {
+                G.selectedDivisions = divs.map(d => d.id);
+                G.selectedDivision = null;
+                G.selectedCity = null;
+                G.selectedProvince = null;
+                selectedProvince = null;
+                if (typeof addGameLog === 'function') addGameLog("已选中本国全部 " + divs.length + " 个师团");
+            } else if (typeof addGameLog === 'function') addGameLog("本国目前没有师团");
+            return true;
+        }
         // 暂停按钮点击
         if (G._pauseBtn && mx > G._pauseBtn.x && mx < G._pauseBtn.x + G._pauseBtn.w && my > G._pauseBtn.y && my < G._pauseBtn.y + G._pauseBtn.h) {
             G.paused = !G.paused;

@@ -5,6 +5,7 @@ let G = {
     speed: 4,
     paused: true,
     playerCountry: null,
+    devMode: false,
     tick: 0,
     countries: {},
     divisions: [],
