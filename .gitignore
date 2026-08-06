@@ -15,3 +15,7 @@ Temp/
 *.csproj
 *.sln
 *.userprefs
+
+# 本地工具与备份
+.ai_backup_*/
+.workbuddy/

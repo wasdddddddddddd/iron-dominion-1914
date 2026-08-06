@@ -59,7 +59,7 @@ const CITIES = [
     { id:'sedan', name:'色当', country:'FRANCE', lon:4.94, lat:49.70, isCapital:false },
     { id:'mezieres', name:'梅济耶尔', country:'FRANCE', lon:4.72, lat:49.77, isCapital:false },
     { id:'barleduc', name:'巴勒迪克', country:'FRANCE', lon:5.16, lat:48.77, isCapital:false },
-    { id:'colmar', name:'科尔马', country:'FRANCE', lon:7.36, lat:48.08, isCapital:false },
+    { id:'colmar', name:'科尔马', country:'GERMANY', lon:7.36, lat:48.08, isCapital:false },
     { id:'boulogne', name:'布洛涅', country:'FRANCE', lon:1.61, lat:50.73, isCapital:false },
     { id:'dieppe', name:'迪耶普', country:'FRANCE', lon:1.08, lat:49.93, isCapital:false },
     { id:'cherbourg', name:'瑟堡', country:'FRANCE', lon:-1.62, lat:49.64, isCapital:false },

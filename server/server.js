@@ -24,6 +24,7 @@ const MIME = {
     '.gif': 'image/gif',
     '.svg': 'image/svg+xml',
     '.ico': 'image/x-icon',
+    '.mp3': 'audio/mpeg',
 };
 
 const server = http.createServer((req, res) => {
@@ -33,8 +34,8 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ status: 'ok', rooms: rooms.size, players }));
         return;
     }
-    // 静态文件服务
-    let filePath = req.url === '/' ? '/index.html' : req.url.split('?')[0];
+    // 静态文件服务（需URL解码，支持中文和特殊字符文件名）
+    let filePath = req.url === '/' ? '/index.html' : decodeURIComponent(req.url.split('?')[0]);
     filePath = path.join(ROOT, filePath);
     // 安全检查：防止路径穿越
     if (!filePath.startsWith(ROOT)) { res.writeHead(403); res.end('Forbidden'); return; }

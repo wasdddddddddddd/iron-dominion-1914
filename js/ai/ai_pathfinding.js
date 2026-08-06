@@ -66,19 +66,25 @@ function isWalkable(cx, cy) {
     if (cx < 0 || cx >= gPF.cols || cy < 0 || cy >= gPF.rows) return false;
     return gPF.land[cellIdx(cx, cy)] === 1;
 }
+
+// 外交通行判定（统一：交战公告 / 同盟 / 军事通行权 / 同阵营 / 附属国）
+// A*、直线验证、移动层、路径缓存校验四处共用，避免判定逻辑分叉
+function pfNationAllowed(country, owner) {
+    if (!owner || owner === country) return true;
+    if (typeof canEngage === 'function' && canEngage(country, owner)) return true;
+    if (G.alliances && G.alliances[country] && G.alliances[country][owner]) return true;
+    if (G.militaryAccess && G.militaryAccess[owner] && G.militaryAccess[owner][country]) return true;
+    if (typeof isSameFaction === 'function' && isSameFaction(country, owner)) return true;
+    if (typeof isVassalOf === 'function' && (isVassalOf(owner, country) || isVassalOf(country, owner))) return true;
+    return false;
+}
+
 function cellCost(cx, cy) {
     if (cx < 0 || cx >= gPF.cols || cy < 0 || cy >= gPF.rows) return 9999;
     let idx = cellIdx(cx, cy);
     if (_pfCtx && gPF.owner[idx]) {
         let owner = G.provinceOwners[gPF.owner[idx]];
-        if (owner && owner !== _pfCtx.country) {
-            if (owner === _pfCtx.country || canEngage(_pfCtx.country, owner)) {}
-            else if (G.alliances && G.alliances[_pfCtx.country] && G.alliances[_pfCtx.country][owner]) {}
-            else if (G.militaryAccess && G.militaryAccess[owner] && G.militaryAccess[owner][_pfCtx.country]) {}
-            else if (isSameFaction(_pfCtx.country, owner)) {}
-            else if (isVassalOf(owner, _pfCtx.country) || isVassalOf(_pfCtx.country, owner)) {}
-            else return 9999;
-        }
+        if (owner && !pfNationAllowed(_pfCtx.country, owner)) return 9999;
     }
     return gPF.cost[idx];
 }
@@ -242,8 +248,8 @@ function buildPF() {
         for (let cx = 0; cx < cols; cx++) {
             let idx = cellIdx(cx, cy);
             if (land[idx] === 0) continue;
-            if (border1[idx]) { cost[idx] = Math.max(cost[idx], 7.0); continue; }
-            if (border2[idx]) { cost[idx] = Math.max(cost[idx], 4.0); continue; }
+            if (border1[idx]) { cost[idx] = Math.max(cost[idx], 3.0); continue; }
+            if (border2[idx]) { cost[idx] = Math.max(cost[idx], 2.0); continue; }
             // 第三层：距边境2格
             let border3 = false;
             for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
@@ -252,7 +258,7 @@ function buildPF() {
                 if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue;
                 if (border2[cellIdx(nx, ny)]) { border3 = true; break; }
             }
-            if (border3) cost[idx] = Math.max(cost[idx], 2.0);
+            if (border3) cost[idx] = Math.max(cost[idx], 1.3);
         }
     }
 
@@ -561,20 +567,13 @@ function findPathRaw(fromX, fromY, toX, toY) {
                 let ownerProv = gPF.owner[hidx];
                 if (ownerProv) {
                     let owner = G.provinceOwners[ownerProv];
-                    if (owner && owner !== _pfCtx.country) {
-                        let allowed = canEngage(_pfCtx.country, owner);
-                        if (!allowed && G.alliances) allowed = G.alliances[_pfCtx.country] && G.alliances[_pfCtx.country][owner];
-                        if (!allowed && G.militaryAccess) allowed = G.militaryAccess[owner] && G.militaryAccess[owner][_pfCtx.country];
-                        if (!allowed) allowed = isSameFaction(_pfCtx.country, owner);
-                        if (!allowed) allowed = isVassalOf(owner, _pfCtx.country) || isVassalOf(_pfCtx.country, owner);
-                        if (!allowed) {
-                            if (gPF.cost[hidx] < 9999) {
-                                gPF.cost[hidx] = 9999;
-                                if (!gPF._blocked) gPF._blocked = [];
-                                gPF._blocked.push({ x: hcx, y: hcy });
-                            }
-                            return null;
+                    if (owner && !pfNationAllowed(_pfCtx.country, owner)) {
+                        if (gPF.cost[hidx] < 9999) {
+                            gPF.cost[hidx] = 9999;
+                            if (!gPF._blocked) gPF._blocked = [];
+                            gPF._blocked.push({ x: hcx, y: hcy });
                         }
+                        return null;
                     }
                 }
             }
@@ -796,28 +795,6 @@ moveUnits = function(days) {
             d.facing = dy > 0 ? 's' : 'n';
         }
 
-        // ===== 外交边界检查（陆军禁止越界；空军飞越国界） =====
-        if (d.type !== 'airplane' && gPF && gPF.owner) {
-            let cx = lon2c(d.rx), cy = lat2c(d.ry);
-            if (cx >= 0 && cx < gPF.cols && cy >= 0 && cy < gPF.rows) {
-                let ownerProv = gPF.owner[cy * gPF.cols + cx];
-                if (ownerProv) {
-                    let owner = G.provinceOwners[ownerProv];
-                    if (owner && owner !== d.country) {
-                        let allowed = canEngage(d.country, owner);
-                        if (!allowed && G.alliances) allowed = G.alliances[d.country] && G.alliances[d.country][owner];
-                        if (!allowed && G.militaryAccess) allowed = G.militaryAccess[owner] && G.militaryAccess[owner][d.country];
-                        if (!allowed) allowed = isSameFaction(d.country, owner);
-                        if (!allowed) allowed = isVassalOf(owner, d.country) || isVassalOf(d.country, owner);
-                        if (!allowed) {
-                            d.rx = d._prevX || d.rx; d.ry = d._prevY || d.ry;
-                            d._stuck = (d._stuck || 0) + 1;
-                        }
-                    }
-                }
-            }
-        }
-
         // ===== 卡死检测（阈值为当帧最大移动距离的10%，低倍速不误判） =====
         if (d._prevX !== undefined && d._prevY !== undefined) {
             let minMove = Math.max(0.00005, spd * 0.1);
@@ -827,6 +804,25 @@ moveUnits = function(days) {
                 d._stuck = 0;
             }
         }
+
+        // ===== 外交边界检查（陆军禁止越界；空军飞越国界） =====
+        if (d.type !== 'airplane' && gPF && gPF.owner) {
+            let cx = lon2c(d.rx), cy = lat2c(d.ry);
+            if (cx >= 0 && cx < gPF.cols && cy >= 0 && cy < gPF.rows) {
+                let ownerProv = gPF.owner[cy * gPF.cols + cx];
+                if (ownerProv) {
+                    let owner = G.provinceOwners[ownerProv];
+                    if (owner && !pfNationAllowed(d.country, owner)) {
+                        // 越界：回退一帧 + 立即重算（不再蹭边境等 15 帧）
+                        d.rx = d._prevX !== undefined ? d._prevX : d.rx;
+                        d.ry = d._prevY !== undefined ? d._prevY : d.ry;
+                        d._stuck = STUCK_FRAMES;
+                        d.path = null;
+                    }
+                }
+            }
+        }
+
         d._prevX = d.rx; d._prevY = d.ry;
     }
 
@@ -1106,6 +1102,7 @@ moveUnits = function(days) {
                 let scx = lon2c(d.rx), scy = lat2c(d.ry), ecx = lon2c(tx), ecy = lat2c(ty);
                 if (scx >= 0 && scx < gPF.cols && scy >= 0 && scy < gPF.rows && ecx >= 0 && ecx < gPF.cols && ecy >= 0 && ecy < gPF.rows) {
                     let spid = gPF.owner[scy * gPF.cols + scx], epid = gPF.owner[ecy * gPF.cols + ecx];
+                    // 起点/终点同省份（必然同国）且两侧 cost 无惩罚 → 可直线
                     if (spid && epid && spid === epid && gPF.cost[scy * gPF.cols + scx] <= 1.0 && gPF.cost[ecy * gPF.cols + ecx] <= 1.0) {
                         directOk = true;
                     }
@@ -1117,7 +1114,22 @@ moveUnits = function(days) {
                 for (let s = 1; s <= steps; s++) {
                     let t = s / steps;
                     let px = d.rx + (tx - d.rx) * t, py = d.ry + (ty - d.ry) * t;
-                    if (isNavy ? _onNavyGrid(px, py) : !_onLandGrid(px, py)) { directOk = false; break; }
+                    if (isNavy) {
+                        if (!_onNavyGrid(px, py)) { directOk = false; break; }
+                    } else {
+                        if (!_onLandGrid(px, py)) { directOk = false; break; }
+                        // 国境检查：直线途经的外国领土必须允许通行，否则交给 A* 绕行
+                        if (gPF && gPF.owner) {
+                            let hcx = lon2c(px), hcy = lat2c(py);
+                            if (hcx >= 0 && hcx < gPF.cols && hcy >= 0 && hcy < gPF.rows) {
+                                let op = gPF.owner[hcy * gPF.cols + hcx];
+                                if (op) {
+                                    let owner = G.provinceOwners[op];
+                                    if (owner && !pfNationAllowed(d.country, owner)) { directOk = false; break; }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if (directOk && !stuck) continue;
@@ -1225,6 +1237,12 @@ function assignPath(div, wx, wy) {
     div._stuck = 0; div.state = 'moving';
 }
 function aiMoveTo(div, tx, ty) { assignPath(div, tx, ty); }
+// AI 移动到目标点（走寻路）。
+// 修复历史遗漏：ai_controller.js 大量调用 aiMoveToTarget 但从未定义，此前全部落到
+// 直线移动 fallback（绕过 A*，导致 AI 穿山过河）；现补上走寻路的正式实现。
+// 注意：headless 验证时若此函数引发原生崩溃，先检查 buildPF 是否完成（gPF 为 null 时
+// assignPath → nearestLand 可能访问未初始化网格）。
+function aiMoveToTarget(div, tx, ty) { aiMoveTo(div, tx, ty); }
 function aiMoveToEnemy(div, enemy) {
     if (!div || !enemy || enemy.strength <= 0) return;
     let ut = UNIT_TYPES[div.type] || UNIT_TYPES.infantry;

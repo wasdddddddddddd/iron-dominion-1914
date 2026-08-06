@@ -1,0 +1,10 @@
+import fs from 'fs';
+const provinces = fs.readFileSync('js/data_provinces.js', 'utf8');
+const cities = fs.readFileSync('js/data_cities.js', 'utf8');
+const railways = fs.readFileSync('js/data_railways.js', 'utf8');
+const sea = fs.readFileSync('js/data_sea_zones.js', 'utf8');
+const pc = (provinces.match(/id:\s*'/g) || []).length;
+const cc = (cities.match(/id:\s*'/g) || []).length;
+const rc = (railways.match(/\|/g) || []).length / 2;
+const sc = (sea.match(/id:\s*'/g) || []).length;
+console.log('省份(约):', pc, '城市(约):', cc, '铁路段(约):', Math.round(rc), '海域(约):', sc);

@@ -63,6 +63,24 @@ function reevaluateStrategy(country) {
     strat.goal = goal;
     strat.lastTick = G.tick || 0;
     strat.alloc = STRATEGY_ALLOC[goal] || STRATEGY_ALLOC[STRATEGY_BALANCE];
+    // 集成战略态势评估（使用推荐策略而非仅靠紧急等级）
+    let sit = G._aiSituation ? G._aiSituation[country] : null;
+    if (sit) {
+        strat.emergency = sit.emergencyLevel || 0;
+        // 使用推荐策略覆盖目标，但不过度消极
+        if (sit.recommendedStrategy) {
+            let mappedGoal = mapNewStrategyToGoal(sit.recommendedStrategy);
+            if (mappedGoal && mappedGoal !== 'BALANCE') {
+                goal = mappedGoal;
+            }
+        }
+        // 仅当紧急等级>=3且城市丢失>30%时才强制防御
+        if (sit.emergencyLevel >= 3 && sit.totalLossRatio > 0.3) {
+            goal = STRATEGY_DEFENSIVE;
+        }
+        strat.goal = goal;
+        strat.alloc = STRATEGY_ALLOC[goal] || STRATEGY_ALLOC[STRATEGY_BALANCE];
+    }
     strat.theaterPlan = generateTheaterPlan(country, goal);
     return strat;
 }
@@ -116,6 +134,16 @@ const THEATER_DEFS = {
 function generateTheaterPlan(country, goal) {
     let plan = {};
     let enemies = typeof getEnemiesOf === 'function' ? getEnemiesOf(country) : [];
+    // 历史宿敌：所在战区大幅加权（俄国必须优先打德国/奥匈，而不是土耳其）
+    const HIST_RIVALS = {
+        'GERMANY': ['FRANCE', 'RUSSIA', 'BELGIUM', 'LUXEMBOURG'], 'FRANCE': ['GERMANY'],
+        'UK': ['GERMANY'], 'RUSSIA': ['GERMANY', 'AUSTRIA_HUNGARY'],
+        'AUSTRIA_HUNGARY': ['RUSSIA', 'SERBIA', 'ITALY'], 'ITALY': ['AUSTRIA_HUNGARY'],
+        'SERBIA': ['AUSTRIA_HUNGARY'], 'TURKEY': ['RUSSIA'],
+        'BULGARIA': ['SERBIA', 'ROMANIA'], 'ROMANIA': ['BULGARIA', 'AUSTRIA_HUNGARY'],
+        'GREECE': ['TURKEY'], 'BELGIUM': ['GERMANY'], 'NETHERLANDS': ['GERMANY'],
+    };
+    let rivals = HIST_RIVALS[country] || [];
     for (let tk in THEATER_DEFS) {
         let th = THEATER_DEFS[tk];
         if (!th.cos.includes(country)) continue;
@@ -124,14 +152,18 @@ function generateTheaterPlan(country, goal) {
         let str = 'DEFENSIVE';
         if (hasEnemy) {
             priority = 0.5;
-            let ed = 0;
+            let ed = 0, rivalEd = 0;
             for (let e of enemies) {
                 if (th.cos.includes(e)) {
                     let cd = G.countries[e];
-                    if (cd) ed += cd.divCount || 0;
+                    if (cd) { ed += cd.divCount || 0; if (rivals.includes(e)) rivalEd += (cd.divCount || 0); }
                 }
             }
-            if (ed > 0) priority = Math.min(1.0, 0.3 + ed * 0.01);
+            // 历史宿敌加权：宿敌兵力 ×2.5 计入优先级，次要敌人（如土耳其对俄国）被稀释
+            let weightedEd = rivalEd * 2.5 + (ed - rivalEd) * 0.4;
+            if (weightedEd > 0) priority = Math.min(1.0, 0.3 + weightedEd * 0.01);
+            // 主攻方向永远是宿敌战区（史丽芬的西线/俄国的东线）
+            if (rivalEd > 0 && ed > 0) priority = Math.max(priority, 0.8);
             if (goal === STRATEGY_BLITZ || goal === STRATEGY_TOTAL_WAR) {
                 str = priority > 0.6 ? 'OFFENSIVE' : 'DEFENSIVE';
             } else if (goal === STRATEGY_DEFENSIVE) {
@@ -212,4 +244,30 @@ function getMinEnemyDistToPoint(lon, lat, country) {
         if (dist < md) md = dist;
     }
     return md;
+}
+
+// === 新增：新策略（8种战术策略）到旧策略（5种战略目标）的映射 ===
+const STRATEGY_GOAL_MAP = {
+    'EMERGENCY_DEFENSE': 'DEFENSIVE',
+    'CAPITAL_DEFENSE': 'DEFENSIVE',
+    'LAST_STAND': 'DEFENSIVE',
+    'STRATEGIC_DEFENSE': 'DEFENSIVE',
+    'ELASTIC_DEFENSE': 'DEFENSIVE',
+    'ALL_OUT_OFFENSIVE': 'TOTAL_WAR',
+    'FOCUSED_OFFENSIVE': 'BLITZ',
+    'BALANCED': 'BALANCE',
+};
+
+function mapNewStrategyToGoal(newStrategy) {
+    return STRATEGY_GOAL_MAP[newStrategy] || 'BALANCE';
+}
+
+// === 新增：根据紧急等级获取分配 ===
+function getEmergencyAllocation(strategy, sit) {
+    let base = STRATEGY_ALLOC[mapNewStrategyToGoal(strategy)] || STRATEGY_ALLOC[STRATEGY_BALANCE];
+    // 紧急模式下调整分配
+    if (sit && sit.emergencyLevel >= 2) {
+        return { fb: 0.1, ms: 0.2, cu: 0.1, ns: 0.1, rr: 0.05 }; // 全力造兵
+    }
+    return base;
 }
