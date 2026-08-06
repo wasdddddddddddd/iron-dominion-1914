@@ -1,6 +1,6 @@
 // ============================================================
-//  Iron & Dominion 1914 — 国际贸易系统（伦敦市场）
-//  出口从国家总量扣除（仅计连接首都的城市：铁路连通 或 港口无封锁）
+//  Iron & Dominion 1914 — 国际贸易系统（双边贸易）
+//  出口 = 卖给指定国家（对方国库付款）；进口 = 向指定国家购买（对方库存扣货）
 //  伦敦定价 = f(全球库存)：有效库存 = 全局库存×30%，缺货系数驱动价格
 // ============================================================
 
@@ -26,7 +26,7 @@ const MARKET_AI_IMPORT_TH = 0.30;   // AI 库存 < 上限×30% 尝试进口
 
 function marketState() {
     if (!G.market) {
-        G.market = { _v: 1 };
+        G.market = { _v: 2 };
     }
     let m = G.market;
     if (!m.virtual) {
@@ -48,6 +48,14 @@ function marketState() {
     if (m.lastMonth === undefined) m.lastMonth = 0;
     if (m.scroll === undefined) m.scroll = 0;
     if (!m.aiTax) m.aiTax = {};
+    // 每行独立贸易对象国（默认：地图上第一个其他国家）
+    if (!m.expObj) m.expObj = {};
+    if (!m.impObj) m.impObj = {};
+    let def = marketDefaultPartner();
+    for (let t of ['grain', 'iron']) {
+        if (m.expObj[t] === undefined || m.expObj[t] === G.playerCountry) m.expObj[t] = def;
+        if (m.impObj[t] === undefined || m.impObj[t] === G.playerCountry) m.impObj[t] = def;
+    }
     if (!m._initDone) {
         // 开局基线：城市开局统一为 grainMax×0.8（initCities），以此作为「开局全球库存」
         // 开局全球库存 = Σ城市库存 + Σ虚拟国份额（美国 30% 计入）
@@ -70,6 +78,22 @@ function marketState() {
         m._initDone = true;
     }
     return m;
+}
+
+// 可作贸易对象的地图国家（有国库与城市实体，排除虚拟离岸大国与自己）
+function marketPartners() {
+    let list = [];
+    for (let code of MARKET_TRADABLE) {
+        if (MARKET_VIRTUAL_CN[code]) continue;
+        if (code === G.playerCountry) continue;
+        list.push(code);
+    }
+    return list;
+}
+
+function marketDefaultPartner() {
+    let list = marketPartners();
+    return list.length > 0 ? list[0] : null;
 }
 
 // 当前月份键（年×12+月），用于月度统计滚动
@@ -133,9 +157,44 @@ function marketExportCap(country, type) {
     return Math.min(total, total * MARKET_EXPORT_RATIO);
 }
 
-// 玩家出口：amount 从连接首都的城市库存按比例扣除 → 全球库存随之变化 → 价格联动
-// 收入 = amount/100 × 伦敦基准价 × (1−实际税率)
-function doMarketExport(country, type, amount, taxOverride) {
+// 从「国家」连接首都的城市按比例扣除 amount（出口时扣本国；进口时扣对方国家）
+function deductNationalStock(country, type, amount) {
+    let r = (typeof calcNationalResources === 'function') ? calcNationalResources(country) : null;
+    let connected = r ? (r.connected || {}) : {};
+    let queue = [];
+    let totalStock = 0;
+    for (let cid in connected) {
+        let c = G.cities[cid];
+        if (!c) continue;
+        let stock = type === 'grain' ? (c.grain || 0) : (c.iron || 0);
+        if (stock <= 0) continue;
+        queue.push({ c: c, stock: stock });
+        totalStock += stock;
+    }
+    if (queue.length === 0 || totalStock < amount) return false;
+    let remain = amount;
+    for (let q of queue) {
+        let take = Math.min(q.stock, amount * q.stock / totalStock);
+        if (type === 'grain') q.c.grain = Math.max(0, (q.c.grain || 0) - take);
+        else q.c.iron = Math.max(0, (q.c.iron || 0) - take);
+        remain -= take;
+    }
+    if (remain > 0.5) {
+        for (let q of queue) {
+            let stock = type === 'grain' ? (q.c.grain || 0) : (q.c.iron || 0);
+            if (stock > 0) {
+                if (type === 'grain') q.c.grain = Math.max(0, stock - remain);
+                else q.c.iron = Math.max(0, stock - remain);
+                break;
+            }
+        }
+    }
+    return true;
+}
+
+// 玩家出口：把 amount 卖给对象国 partner → 对象国国库付款，本国连接城市扣货
+// 收入 = amount/100 × 伦敦价 × (1−税率)；对方国库不足则失败
+function doMarketExport(country, type, amount, taxOverride, partner) {
     let m = marketState();
     let st = marketNationalStock(country);
     let total = type === 'grain' ? st.grain : st.iron;
@@ -144,50 +203,99 @@ function doMarketExport(country, type, amount, taxOverride) {
     if (amount <= 0) return { ok: false, reason: '数量需大于 0' };
     let cap = total * MARKET_EXPORT_RATIO;
     if (amount > cap) return { ok: false, reason: '单次出口不能超过总量 30%（上限 ' + Math.floor(cap) + '）' };
-    let r = calcNationalResources(country);
-    let connected = r.connected || {};
-    // 按比例从连接城市扣除
-    let remain = amount;
-    let queue = [];
-    for (let cid in connected) {
-        let c = G.cities[cid];
-        if (!c) continue;
-        let stock = type === 'grain' ? (c.grain || 0) : (c.iron || 0);
-        if (stock <= 0) continue;
-        queue.push({ c: c, stock: stock });
-    }
-    if (queue.length === 0) return { ok: false, reason: '连接城市无库存' };
-    let totalStock = 0;
-    for (let q of queue) totalStock += q.stock;
-    let remain2 = amount;
-    for (let q of queue) {
-        let share = amount * q.stock / totalStock;
-        let take = Math.min(q.stock, share);
-        if (type === 'grain') q.c.grain = Math.max(0, (q.c.grain || 0) - take);
-        else q.c.iron = Math.max(0, (q.c.iron || 0) - take);
-        remain2 -= take;
-    }
-    if (remain2 > 0.5) {
-        // 取整误差兜底：从第一个有库存的城市扣
-        for (let q of queue) {
-            let stock = type === 'grain' ? (q.c.grain || 0) : (q.c.iron || 0);
-            if (stock > 0) {
-                if (type === 'grain') q.c.grain = Math.max(0, stock - remain2);
-                else q.c.iron = Math.max(0, stock - remain2);
-                break;
-            }
+    let price = type === 'grain' ? m.quotes.grain : m.quotes.iron;
+    // 实际税率：调用方显式指定（AI 用 aiTaxFor）否则玩家对该对象国设定的税率
+    let tax = taxOverride !== undefined ? taxOverride : marketTaxFor(m, partner || country);
+    let income = amount / 100 * price * (1 - tax / 100);
+    // 双边贸易：对象国国库付款（有实体国库的才校验）
+    if (partner && partner !== country && G.countries && G.countries[partner]) {
+        let pd = G.countries[partner];
+        if ((pd.treasury || 0) < income) {
+            return { ok: false, reason: (COUNTRY_CN[partner] || partner) + ' 国库不足（需 ' + Math.ceil(income) + ' 金币）' };
         }
     }
-    let price = type === 'grain' ? m.quotes.grain : m.quotes.iron;
-    let tax = taxOverride !== undefined ? taxOverride :
-        (typeof m.overrides['LONDON'] !== 'undefined' ? m.overrides['LONDON'] : m.baseTax);
-    let income = amount / 100 * price * (1 - tax / 100);
+    if (!deductNationalStock(country, type, amount)) return { ok: false, reason: '连接城市无库存' };
     let cd = G.countries && G.countries[country];
     if (cd) {
         cd.treasury = Math.round(((cd.treasury || 0) + income) * 10) / 10;
     }
+    if (partner && partner !== country && G.countries && G.countries[partner]) {
+        let pd = G.countries[partner];
+        pd.treasury = Math.round(((pd.treasury || 0) - income) * 10) / 10;
+    }
     m.thisMonth = Math.round((m.thisMonth + income) * 10) / 10;
-    return { ok: true, income: Math.round(income * 10) / 10, price: price, amount: amount };
+    return { ok: true, income: Math.round(income * 10) / 10, price: price, amount: amount, partner: partner || null };
+}
+
+// 向「指定国家」购买：对方连接城市库存扣货 → 本国接收；花费 = amount/100 × 伦敦价
+// 本国金币不足 / 对方库存不足 / 本国仓储不足 → 失败并给出原因
+function doMarketImport(country, type, amount, partner) {
+    let m = marketState();
+    if (amount <= 0) return { ok: false, reason: '数量需大于 0' };
+    if (!partner || partner === country) {
+        let list = marketPartners();
+        if (list.length === 0) return { ok: false, reason: '无可用贸易对象国' };
+        partner = list[0];
+    }
+    let price = type === 'grain' ? m.quotes.grain : m.quotes.iron;
+    let cost = amount / 100 * price;
+    let cd = G.countries && G.countries[country];
+    if (!cd) return { ok: false, reason: '国家数据缺失' };
+    if ((cd.treasury || 0) < cost) return { ok: false, reason: '金币不足（需要 ' + Math.ceil(cost) + '）' };
+    let st = marketNationalStock(country);
+    if (st.connectedCount <= 0) return { ok: false, reason: '无可用通道（需港口或铁路连接）' };
+    // 对方库存：连接首都的可贸易库存需 ≥ amount
+    let pst = marketNationalStock(partner);
+    if (pst.connectedCount <= 0) return { ok: false, reason: (COUNTRY_CN[partner] || partner) + ' 无贸易通道' };
+    let pTotal = type === 'grain' ? pst.grain : pst.iron;
+    if (pTotal < amount) return { ok: false, reason: (COUNTRY_CN[partner] || partner) + ' 库存不足（仅 ' + Math.floor(pTotal) + '）' };
+    // 本国仓储空间：连接城市剩余容量
+    let room = 0;
+    let r = (typeof calcNationalResources === 'function') ? calcNationalResources(country) : null;
+    let connected = r ? (r.connected || {}) : {};
+    for (let cid in connected) {
+        let c = G.cities[cid];
+        if (!c) continue;
+        let maxC = type === 'grain' ? (c.grainMax || 500) : (c.ironMax || 500);
+        let cur = type === 'grain' ? (c.grain || 0) : (c.iron || 0);
+        room += Math.max(0, maxC - cur);
+    }
+    if (room < amount) return { ok: false, reason: '仓储空间不足（可用 ' + Math.floor(room) + '）' };
+    // 对方扣货 + 本国接收（分散到多个有余量城市）
+    if (!deductNationalStock(partner, type, amount)) return { ok: false, reason: (COUNTRY_CN[partner] || partner) + ' 扣货失败' };
+    let remainRecv = amount;
+    let recvList = [];
+    for (let cid in connected) {
+        let c = G.cities[cid];
+        if (!c) continue;
+        let maxC = type === 'grain' ? (c.grainMax || 500) : (c.ironMax || 500);
+        let cur = type === 'grain' ? (c.grain || 0) : (c.iron || 0);
+        let rm = maxC - cur;
+        if (rm > 0) recvList.push({ c: c, rm: rm });
+    }
+    if (recvList.length === 0) {
+        for (let cid in G.cities) {
+            let c = G.cities[cid];
+            if (!c || c.owner !== country) continue;
+            let maxC = type === 'grain' ? (c.grainMax || 500) : (c.ironMax || 500);
+            let cur = type === 'grain' ? (c.grain || 0) : (c.iron || 0);
+            let rm = maxC - cur;
+            if (rm > 0) recvList.push({ c: c, rm: rm });
+        }
+    }
+    for (let rv of recvList) {
+        if (remainRecv <= 0) break;
+        let put = Math.min(rv.rm, remainRecv);
+        if (type === 'grain') rv.c.grain = Math.min(rv.c.grainMax || 500, (rv.c.grain || 0) + put);
+        else rv.c.iron = Math.min(rv.c.ironMax || 500, (rv.c.iron || 0) + put);
+        remainRecv -= put;
+    }
+    cd.treasury = Math.round(((cd.treasury || 0) - cost) * 10) / 10;
+    if (G.countries && G.countries[partner]) {
+        let pd = G.countries[partner];
+        pd.treasury = Math.round(((pd.treasury || 0) + cost) * 10) / 10;
+    }
+    return { ok: true, cost: Math.round(cost * 10) / 10, price: price, amount: amount, partner: partner };
 }
 
 // AI 进口：从「其他国家」城市库存按比例买入 → 本国连接城市接收；金币不足则提高基准税率
@@ -215,35 +323,39 @@ function aiMarketImport(m, country, amount, type) {
         else p.c.iron = Math.max(0, (p.c.iron || 0) - take);
         remain -= take;
     }
-    // 本国接收：优先连接城市，其次任意本国城市
-    let got = false;
+    // 本国接收：优先连接城市，其次任意本国城市；分散到多个有余量的城市
+    let recvList = [];
     for (let cid in connected) {
         let c = G.cities[cid];
         if (!c) continue;
         let maxC = type === 'grain' ? (c.grainMax || 500) : (c.ironMax || 500);
-        let room = maxC - (type === 'grain' ? (c.grain || 0) : (c.iron || 0));
-        if (room > amount * 0.5) {
-            if (type === 'grain') c.grain = Math.min(maxC, (c.grain || 0) + amount);
-            else c.iron = Math.min(maxC, (c.iron || 0) + amount);
-            got = true;
-            break;
-        }
+        let cur = type === 'grain' ? (c.grain || 0) : (c.iron || 0);
+        let room = maxC - cur;
+        if (room > 0) recvList.push({ c: c, room: room });
     }
-    if (!got) {
+    if (recvList.length === 0) {
         for (let cid in G.cities) {
             let c = G.cities[cid];
             if (!c || c.owner !== country) continue;
             let maxC = type === 'grain' ? (c.grainMax || 500) : (c.ironMax || 500);
-            let room = maxC - (type === 'grain' ? (c.grain || 0) : (c.iron || 0));
-            if (room > amount * 0.5) {
-                if (type === 'grain') c.grain = Math.min(maxC, (c.grain || 0) + amount);
-                else c.iron = Math.min(maxC, (c.iron || 0) + amount);
-                got = true;
-                break;
-            }
+            let cur = type === 'grain' ? (c.grain || 0) : (c.iron || 0);
+            let room = maxC - cur;
+            if (room > 0) recvList.push({ c: c, room: room });
         }
     }
-    return got;
+    if (recvList.length === 0) return false;
+    let totalRoom = 0;
+    for (let rv of recvList) totalRoom += rv.room;
+    if (totalRoom < amount) return false;
+    let remainRecv = amount;
+    for (let rv of recvList) {
+        let put = Math.min(rv.room, remainRecv);
+        if (put <= 0) continue;
+        if (type === 'grain') rv.c.grain = Math.min(rv.c.grainMax || 500, (rv.c.grain || 0) + put);
+        else rv.c.iron = Math.min(rv.c.ironMax || 500, (rv.c.iron || 0) + put);
+        remainRecv -= put;
+    }
+    return remainRecv <= 0.5;
 }
 
 // ===== 主循环：每日价格刷新 + 月度统计滚动 =====
@@ -334,6 +446,12 @@ function aiTaxFor(co) {
 // ===== 市场面板 UI =====
 let _marketScrollMax = 0;
 
+// 面板内实时结果（交易后立即显示，3 秒后自动清除）
+function marketFlash(m, text, ok) {
+    m.flash = { text: text, ok: ok, at: performance.now() };
+    if (typeof addGameLog === 'function') addGameLog("📊 " + text);
+}
+
 function drawMarketPanel(px, py, pw, ph) {
     let m = marketState();
     ctx.save();
@@ -355,22 +473,21 @@ function drawMarketPanel(px, py, pw, ph) {
     ctx.fillStyle = "#d4c0a0";
     ctx.fillText("💰 金币: " + Math.floor(g.treasury || 0), x, dy); dy += 17;
 
+    // === 交易结果实时反馈（最新一次进出口） ===
+    if (m.flash && performance.now() - m.flash.at < 3000) {
+        let f = m.flash;
+        let fade = 1 - Math.max(0, (performance.now() - m.flash.at - 2400)) / 600;
+        ctx.font = "bold 10px Georgia,serif";
+        ctx.fillStyle = f.ok ? "rgba(120,200,120," + fade + ")" : "rgba(220,110,90," + fade + ")";
+        ctx.fillText((f.ok ? "✔ " : "✘ ") + f.text, x, dy); dy += 15;
+    }
+
     // 伦敦价格
     ctx.fillStyle = "#c8b888";
     ctx.fillText("伦敦价格", x, dy); dy += 15;
     ctx.fillStyle = "#e8d8a0";
     ctx.fillText("🌾 粮食: " + m.quotes.grain + " 金币/100", x + 8, dy); dy += 15;
     ctx.fillText("🏭 铁: " + m.quotes.iron + " 金币/100", x + 8, dy); dy += 17;
-
-    // 全球库存
-    ctx.fillStyle = "#c8b888";
-    ctx.fillText("全球库存: 粮 " + Math.floor(m.quotes.totalGrain) + " | 铁 " + Math.floor(m.quotes.totalIron), x, dy); dy += 15;
-    ctx.fillStyle = "#b0a080";
-    ctx.fillText("有效库存(30%): 粮 " + Math.floor(m.quotes.effGrain) + " | 铁 " + Math.floor(m.quotes.effIron), x, dy); dy += 15;
-    ctx.fillStyle = "#b0a080";
-    let usaShare = m.virtual.USA ? (m.virtual.USA.grain + m.virtual.USA.iron) : 0;
-    let totalVirtual = m.quotes.totalGrain + m.quotes.totalIron;
-    ctx.fillText("美国占比: " + (totalVirtual > 0 ? Math.round(usaShare / totalVirtual * 1000) / 10 : 0) + "%", x, dy); dy += 17;
 
     // 分隔线
     dy += 2;
@@ -385,9 +502,9 @@ function drawMarketPanel(px, py, pw, ph) {
     ctx.rect(px, contentTop, pw, Math.max(40, ph - (contentTop - py) - 34));
     ctx.clip();
 
-    // 粮食出口
-    drawMarketExportRow(btns, m, x, dy, 'grain', '🌾 粮食出口'); dy += 92;
-    drawMarketExportRow(btns, m, x, dy, 'iron', '🏭 铁矿出口'); dy += 92;
+    // 粮食贸易
+    drawMarketTradeRow(btns, m, x, dy, 'grain', '🌾 粮食贸易'); dy += 118;
+    drawMarketTradeRow(btns, m, x, dy, 'iron', '🏭 铁矿贸易'); dy += 118;
 
     // 税率
     dy += 4;
@@ -462,20 +579,94 @@ function drawMiniBtn(btns, b) {
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 0.5);
     ctx.textAlign = "left"; ctx.textBaseline = "top";
-    btns.push({ type: b.type, code: b.code, x: b.x, y: b.y, w: b.w, h: b.h });
+    btns.push({ type: b.type, code: b.code, res: b.res, val: b.val, x: b.x, y: b.y, w: b.w, h: b.h });
 }
 
-function drawMarketExportRow(btns, m, x, y, type, title) {
+// 贸易对象国按钮（出口→国 / 进口←国）
+function drawPartnerBtn(btns, m, type, kind, x, y, w, h) {
+    let code = kind === 'exp' ? m.expObj[type] : m.impObj[type];
+    let list = marketPartners();
+    if (!code || list.indexOf(code) < 0) code = list[0] || null;
+    let hovered = mouseX !== undefined && mouseX > x && mouseX < x + w && mouseY !== undefined && mouseY > y && mouseY < y + h;
+    ctx.fillStyle = hovered ? "rgba(120,140,180,0.3)" : "rgba(50,60,90,0.35)";
+    ctx.strokeStyle = "rgba(180,140,80,0.4)";
+    CT.roundRectPath(ctx, x, y, w, h, 3);
+    ctx.fill(); ctx.stroke();
+    if (code) {
+        if (typeof drawCountryFlag === 'function') drawCountryFlag(code, x + 4, y + 3, 16, h - 6);
+        ctx.fillStyle = "#e8d8a0";
+        ctx.font = "10px sans-serif";
+        ctx.textAlign = "left"; ctx.textBaseline = "middle";
+        let nm = (COUNTRY_CN[code] || code).slice(0, 4);
+        ctx.fillText(nm + " ▼", x + 24, y + h / 2 + 0.5);
+    }
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    btns.push({ type: kind === 'exp' ? 'expPartner' : 'impPartner', res: type, x: x, y: y, w: w, h: h });
+}
+
+function drawMarketTradeRow(btns, m, x, y, type, title) {
     let st = marketNationalStock(G.playerCountry);
     let total = type === 'grain' ? st.grain : st.iron;
     let cap = total * MARKET_EXPORT_RATIO;
+    let price = type === 'grain' ? m.quotes.grain : m.quotes.iron;
+    let partners = marketPartners();
+    let expCode = m.expObj[type], impCode = m.impObj[type];
+    if (partners.indexOf(expCode) < 0) expCode = partners[0] || null;
+    if (partners.indexOf(impCode) < 0) impCode = partners[0] || null;
+
     ctx.font = "bold 11px Georgia,serif";
     ctx.fillStyle = "#c8b888";
     ctx.fillText(title, x, y); y += 15;
     ctx.font = "10px Georgia,serif";
     ctx.fillStyle = "#b0a080";
     ctx.fillText("国家总量: " + Math.floor(total) + "  可出口: " + Math.floor(cap), x, y); y += 14;
-    // 预设按钮
+
+    // 出口行：对象国 + 出口按钮
+    let rowW = x + 150;
+    let bw2 = 40, bh2 = 18;
+    let pw2 = 100;
+    drawPartnerBtn(btns, m, type, 'exp', x, y, pw2, bh2);
+    // 出口税率与预计收入（按对象国税率）
+    let expTax = marketTaxFor(m, expCode || G.playerCountry);
+    let qty = m.sel === 'custom' ? (m.custom || 0) : m.sel;
+    let inc = qty / 100 * price * (1 - expTax / 100);
+    ctx.fillStyle = "#a8d8f0";
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    let bx2 = x + pw2 + 6;
+    CT.roundRectPath(ctx, bx2, y, bw2, bh2, 3);
+    ctx.fillStyle = "rgba(60,120,180,0.35)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(120,180,220,0.5)";
+    ctx.stroke();
+    ctx.fillStyle = "#a8d8f0";
+    ctx.fillText("出口", bx2 + bw2 / 2, y + bh2 / 2 + 0.5);
+    btns.push({ type: 'export', res: type, x: bx2, y: y, w: bw2, h: bh2 });
+    ctx.fillStyle = "#b0a080";
+    ctx.font = "10px Georgia,serif";
+    ctx.textAlign = "left";
+    let pn = expCode ? (COUNTRY_CN[expCode] || expCode) : '无';
+    ctx.fillText("税率 " + expTax + "% → " + pn, bx2 + bw2 + 6, y + 2);
+    y += bh2 + 5;
+
+    // 进口行：对象国 + 进口按钮
+    drawPartnerBtn(btns, m, type, 'imp', x, y, pw2, bh2);
+    let cost = qty / 100 * price;
+    ctx.fillStyle = "rgba(140,110,60,0.35)";
+    CT.roundRectPath(ctx, bx2, y, bw2, bh2, 3);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#f0d8a8";
+    ctx.textAlign = "center";
+    ctx.fillText("进口", bx2 + bw2 / 2, y + bh2 / 2 + 0.5);
+    btns.push({ type: 'import', res: type, x: bx2, y: y, w: bw2, h: bh2 });
+    ctx.fillStyle = "#b0a080";
+    ctx.font = "10px Georgia,serif";
+    ctx.textAlign = "left";
+    let pn2 = impCode ? (COUNTRY_CN[impCode] || impCode) : '无';
+    ctx.fillText("自 " + pn2 + " 购入", bx2 + bw2 + 6, y + 2);
+    y += bh2 + 5;
+
+    // 数量预设
     let bw = 34, bh = 16, bx = x, by = y;
     let presets = [500, 1000, 2000];
     for (let i = 0; i < presets.length; i++) {
@@ -508,26 +699,12 @@ function drawMarketExportRow(btns, m, x, y, type, title) {
         ctx.fillRect(bx + cw - 10, by + 3, 1, bh - 6);
     }
     btns.push({ type: 'custom', res: type, x: bx, y: by, w: cw, h: bh });
-    bx += cw + 4;
-    // 出口按钮
-    let ew = 48;
-    ctx.fillStyle = "rgba(60,120,180,0.35)";
-    ctx.strokeStyle = "rgba(120,180,220,0.5)";
-    CT.roundRectPath(ctx, bx, by, ew, bh, 3);
-    ctx.fill(); ctx.stroke();
-    ctx.fillStyle = "#a8d8f0";
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("出口", bx + ew / 2, by + bh / 2 + 0.5);
-    btns.push({ type: 'export', res: type, x: bx, y: by, w: ew, h: bh });
-    y += 20;
-    // 预计收入
-    let qty = m.sel === 'custom' ? (m.custom || 0) : m.sel;
-    let price = type === 'grain' ? m.quotes.grain : m.quotes.iron;
-    let inc = qty / 100 * price * (1 - m.baseTax / 100);
+    y += bh + 5;
+    // 预计
     ctx.font = "10px Georgia,serif";
     ctx.textAlign = "left"; ctx.textBaseline = "top";
     ctx.fillStyle = "#b0a080";
-    ctx.fillText("预计收入: " + Math.floor(inc) + " 金币", x, y); y += 16;
+    ctx.fillText("预计: 出口+" + Math.floor(inc) + " 进口-" + Math.floor(cost), x, y); y += 15;
     return y;
 }
 
@@ -543,13 +720,30 @@ function handleMarketClick(mx, my) {
                 } else if (b.type === 'custom') {
                     m.sel = 'custom';
                     m.customFocus = true;
+                } else if (b.type === 'expPartner') {
+                    let list = marketPartners();
+                    let cur = list.indexOf(m.expObj[b.res]);
+                    let nxt = (cur + 1) % list.length;
+                    m.expObj[b.res] = list[nxt];
+                    marketFlash(m, "出口对象: " + (COUNTRY_CN[list[nxt]] || list[nxt]), true);
+                } else if (b.type === 'impPartner') {
+                    let list = marketPartners();
+                    let cur = list.indexOf(m.impObj[b.res]);
+                    let nxt = (cur + 1) % list.length;
+                    m.impObj[b.res] = list[nxt];
+                    marketFlash(m, "进口对象: " + (COUNTRY_CN[list[nxt]] || list[nxt]), true);
                 } else if (b.type === 'export') {
                     let qty = m.sel === 'custom' ? Math.max(0, Math.floor(m.custom || 0)) : m.sel;
-                    let res = doMarketExport(G.playerCountry, b.res, qty);
-                    if (typeof addGameLog === 'function') {
-                        if (res.ok) addGameLog("📊 出口" + (b.res === 'grain' ? '粮食' : '铁矿') + " " + qty + " → " + res.income + " 金币");
-                        else addGameLog("📊 出口失败: " + res.reason);
-                    }
+                    let partner = m.expObj[b.res] || marketDefaultPartner();
+                    let res = doMarketExport(G.playerCountry, b.res, qty, undefined, partner);
+                    if (res.ok) marketFlash(m, "出口" + (b.res === 'grain' ? '粮食' : '铁矿') + " " + qty + " → 收入 " + res.income + " 金币", true);
+                    else marketFlash(m, "出口失败: " + res.reason, false);
+                } else if (b.type === 'import') {
+                    let qty = m.sel === 'custom' ? Math.max(0, Math.floor(m.custom || 0)) : m.sel;
+                    let partner = m.impObj[b.res] || marketDefaultPartner();
+                    let res = doMarketImport(G.playerCountry, b.res, qty, partner);
+                    if (res.ok) marketFlash(m, "进口" + (b.res === 'grain' ? '粮食' : '铁矿') + " " + qty + " → 花费 " + res.cost + " 金币", true);
+                    else marketFlash(m, "进口失败: " + res.reason, false);
                 } else if (b.type === 'taxDown') {
                     m.baseTax = Math.max(MARKET_TAX_MIN, m.baseTax - 5);
                 } else if (b.type === 'taxUp') {

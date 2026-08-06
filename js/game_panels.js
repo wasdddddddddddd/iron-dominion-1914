@@ -2171,6 +2171,8 @@ function drawCountrySidebar() {
         if (chf || co === G.playerCountry) chiefLine = 1;
     }
     extraLines += chiefLine;
+    // 市场税率行
+    extraLines += 1;
 
     let x = 10, y = TOP_BAR_HEIGHT + 10, w = 350;
     let baseH = 500;
@@ -2237,6 +2239,16 @@ function drawCountrySidebar() {
     ctx.fillStyle = dp >= 20 ? "#7ab8d4" : CT.danger;
     ctx.font = "11px Georgia,serif";
     ctx.fillText("🏛️ 外交点数: " + dp, x + 16, sy); sy += 16;
+
+    // 市场税率（该国出口到伦敦市场实际被征收的税率：玩家覆盖 > 该国自持调整 > 基准）
+    if (typeof marketState === 'function') {
+        let mTax = marketState();
+        let tax = (typeof aiTaxFor === 'function') ? aiTaxFor(co) : mTax.baseTax;
+        let isCustom = mTax.overrides && mTax.overrides[co] !== undefined;
+        let aiAdj = (mTax.aiTax && mTax.aiTax[co] !== undefined);
+        ctx.fillStyle = (isCustom || aiAdj) ? "#e8d8a0" : CT.textD;
+        ctx.fillText("📊 市场税率: " + tax + "%" + (isCustom ? "（玩家设定）" : "") + (aiAdj ? "（该国自调）" : ""), x + 16, sy); sy += 16;
+    }
 
     // ===== 总司令（本国可更换，他国只读展示） =====
     if (chiefLine === 1) {
